@@ -1,0 +1,50 @@
+[package]
+name = "aurora"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "aurora_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+tauri = { version = "2.0", features = [] }
+tauri-plugin-dialog = "2.0" # Required for native file selection
+tauri-plugin-fs = "2.0"     # Required for Tauri v2 filesystem operations
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+thiserror = "2.0"
+
+# ONNX Runtime - Base (Dynamic loading)
+ort = { version = "=2.0.0-rc.9", default-features = false, features = ["load-dynamic"] }
+
+# Keep the prerelease FFI dependency aligned with the pinned wrapper.
+ort-sys = { version = "=2.0.0-rc.9", default-features = false }
+
+# Audio & Tokenizers
+symphonia = { version = "0.5", features = ["all"] }
+rubato = "0.15"
+num-integer = "0.1"
+ndarray = "0.15"
+tokenizers = "0.20"
+hf-hub = "0.4"
+
+# Target-specific Execution Providers
+[target.'cfg(target_os = "macos")'.dependencies]
+ort = { version = "=2.0.0-rc.9", default-features = false, features = ["coreml"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+ort = { version = "=2.0.0-rc.9", default-features = false, features = ["directml", "cuda"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ort = { version = "=2.0.0-rc.9", default-features = false, features = ["cuda"] }
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] } # Required for Tauri v2 app bundling
+
+
+[dev-dependencies]
+hound = "3.5"
+tempfile = "3"
