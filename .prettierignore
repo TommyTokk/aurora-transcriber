@@ -1,0 +1,8 @@
+target/
+dist/
+node_modules/
+src-tauri/gen/
+Cargo.lock
+package-lock.json
+AGENTS.md
+plan.md
