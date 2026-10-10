@@ -14,8 +14,20 @@ npm run tauri -- dev
 ```
 
 The root Cargo manifest is a workspace; the backend lives in `src-tauri` and the
-frontend in `src`. The current UI is a shell. File selection, transcription,
-progress, model loading, and export are reserved for later milestones.
+frontend in `src`. The English-language UI uses a light pastel palette and supports native audio
+selection or drag-and-drop, local validation, and a file card showing name,
+format, size, and decoded duration. Import one WAV, MP3, FLAC, M4A, or OGG file
+at a time. You can replace or remove a selection; cancelling the picker keeps
+the previous selection. Directories and multiple-file drops are rejected.
+
+Validation runs on a blocking worker and drops decoded samples immediately
+after computing duration. IPC receives no filesystem paths from the WebView
+and emits no sample buffers or full paths. No audio is uploaded or cached.
+Transcription, playback, model loading, and export remain future milestones.
+The reference icon supplies colors only; the bundled icon is unchanged.
+
+`npm run dev` provides a browser layout preview; native import is available
+through `npm run tauri -- dev`.
 
 ## Audio API
 
@@ -29,7 +41,7 @@ rounded to the nearest integer. FFT delay and flush padding are excluded. Codec
 padding follows the container's gapless metadata; lossy files without usable
 padding metadata can retain encoder padding.
 
-Decoding is synchronous: future Tauri commands must call it through
+Decoding is synchronous: Tauri import commands call it through
 `tokio::task::spawn_blocking` after native file selection. Callers own the output
 and must drop it after processing. Intermediate audio stays in scoped memory;
 decoding neither contacts the network nor writes audio caches or sample logs.
