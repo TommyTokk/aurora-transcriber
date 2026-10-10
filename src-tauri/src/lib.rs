@@ -1,5 +1,6 @@
 pub mod audio;
 mod import;
+pub mod vad;
 
 /// Starts Tauri with native file plugins, returning any application startup error.
 ///
