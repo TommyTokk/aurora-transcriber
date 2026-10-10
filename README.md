@@ -23,7 +23,7 @@ the previous selection. Directories and multiple-file drops are rejected.
 Validation runs on a blocking worker and drops decoded samples immediately
 after computing duration. IPC receives no filesystem paths from the WebView
 and emits no sample buffers or full paths. No audio is uploaded or cached.
-Transcription, playback, application model initialization, and export remain future milestones.
+The ASR engine initializes once on a blocking startup worker when local resources are configured. Transcription controls, playback, VAD orchestration, and export remain future milestones.
 The reference icon supplies colors only; the bundled icon is unchanged.
 
 `npm run dev` provides a browser layout preview; native import is available
@@ -80,13 +80,15 @@ VAD boundaries follow the 512-sample frame grid; duration comparisons use
 integer sample counts. Unconfirmed trailing silence remains part of speech at EOF.
 
 Provide the v5.1 `silero_vad.onnx` model locally and set `ORT_DYLIB_PATH` to an
-absolute path to an **ONNX Runtime 1.20.x** library before the first ORT call
+absolute path to an **ONNX Runtime 1.20.1** library before the first ORT call
 (`libonnxruntime.dylib`, `onnxruntime.dll`, or `libonnxruntime.so`). There is
 no bundled runtime or automatic resource installation. Missing model files,
 incompatible tensor contracts, invalid samples, and invalid outputs return
-typed errors. The pinned `ort` rc.9 dependency can panic internally if the
-runtime library is absent, unloadable, or incompatible; resource provisioning
-is a prerequisite rather than a recoverable runtime guarantee.
+typed errors. A shared fallible preflight checks the trusted native library, version, and C API
+before entering the pinned `ort` rc.9 loader. Missing, unloadable, and incompatible
+runtimes return errors. The library is retained for the process lifetime and
+conflicting runtime paths are rejected. Only trusted local native libraries are
+supported: preflight cannot sandbox executable code in an arbitrary library.
 
 The application does not initialize or call VAD yet. Future Tauri integration
 must create and retain the session once in application state and run model
@@ -118,13 +120,138 @@ cargo test --workspace --locked --test silero_vad -- --ignored
 
 This test exercises model loading, real probability/state validation, synthetic
 silence, partial frames, and independent repeated calls. It fails if explicitly
-run without the required resources; it never downloads them. Real inference
-has not been verified in this workspace because those resources are absent.
+run without the required resources; it never downloads them. Real inference was verified locally with the official Silero v5.1 checksum
+`2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f`
+and ONNX Runtime 1.20.1 on macOS arm64. The byte-identical Hugging Face mirror is
+[Derur/silero-models](https://huggingface.co/Derur/silero-models/blob/main/vad/silero_vad.onnx).
 
 Rust dependencies preserve the versions specified in the project plan. ONNX
 `ort` and `ort-sys` are pinned to `2.0.0-rc.9`, with dynamic loading and OS-specific
-execution-provider features. The VAD library initializes ONNX only when explicitly
-constructed by a backend caller; application startup and native import do not
-initialize models. Lockfiles preserve the resolved Rust and frontend dependencies.
+execution-provider features. The VAD library initializes its session only when explicitly
+constructed by a backend caller. ASR startup shares the same guarded runtime
+environment; native import does not initialize or use inference sessions. Lockfiles preserve the resolved Rust and frontend dependencies.
 
 All function documentation and code comments are written in English.
+
+## Parakeet ASR API and configuration
+
+`TranscriberEngine::new(&Path)` loads the local FP32 export of
+[NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3),
+converted by [istupakov](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx).
+The supported revision is **8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce**.
+SHA-256 hashes for all six resources are enforced in
+`src-tauri/src/engine/resources.rs` with a bounded streaming buffer:
+
+- `encoder-model.onnx` and `encoder-model.onnx.data`
+- `decoder_joint-model.onnx`
+- `nemo128.onnx`
+- `config.json` and `vocab.txt`
+
+This export uses an indexed SentencePiece vocabulary, not `tokenizer.json`.
+The model is CC-BY-4.0; preserve attribution when distributing its weights.
+Models and runtime are provisioned explicitly outside tracked files. The app
+never downloads them. Before launching AURORA, set absolute backend paths:
+
+```sh
+export AURORA_ASR_MODEL_DIR=/absolute/path/to/parakeet-fp32
+export ORT_DYLIB_PATH=/absolute/path/to/libonnxruntime.dylib
+npm run tauri -- dev
+```
+
+Use a trusted official ONNX Runtime **1.20.1** package for the host OS and
+architecture, with any required provider dependencies. Cargo provider features
+do not guarantee that the native runtime package includes that provider.
+
+Tauri owns one `EngineState`, initialized in setup with one `spawn_blocking`
+worker. The argument-free `transcriber_state()` command returns
+`{ phase, provider, error }`; phases are `loading`, `ready`, and `unavailable`.
+Providers serialize as `Cpu`, `CoreMl`, `DirectMl`, or `Cuda`, where compiled.
+Errors are safe English messages; no paths, tensors, or underlying ORT errors
+are serialized. Failure leaves the native importer usable and is terminal until
+restart. No retry, resource picker, or status UI is added in this milestone.
+
+`transcribe_chunk(&mut self, &[f32]) -> Result<String, EngineError>` accepts
+finite mono 16 kHz samples in `[-1, 1]`, at most 25 seconds. Empty input returns
+empty text. Nonempty inference errors propagate instead of returning partial
+text. The engine performs ONNX NeMo preprocessing, encoding, and bounded greedy
+TDT decoding, including blank-state rejection, duration prediction, and a
+10-token limit for zero-duration emissions per encoder step. Predictor state
+resets for every chunk. Vocabulary spacing follows the upstream reference.
+
+All platforms process chunks serially with batch 1. Preprocessing runs on CPU.
+ASR session creation attempts CoreML → CPU on macOS, DirectML → CUDA → CPU on
+Windows, and CUDA → CPU on Linux. The Windows sequence is the explicitly approved
+exception to AGENTS.md's immediate CPU fallback rule. Partial session pairs are
+dropped before fallback. DirectML uses sequential execution and disabled memory
+patterns. A configured provider can delegate unsupported operators to CPU.
+
+The caller must use a blocking worker for construction and inference. Future
+Tauri commands can call `EngineState::with_engine` from their worker to borrow
+the retained engine exclusively. Status has an independent mutex and remains
+readable during inference. `new_cpu` provides an explicit CPU constructor for
+reproducible tests. Transient inputs, features, predictor states, and token IDs
+are scoped to one call and released on success or error; returned text belongs
+to the caller. The safe rc.9 constructor copies borrowed input slices into a
+bounded chunk tensor. No audio cache, transcript log, or processing network
+request is introduced. Allocator arenas and memory-pattern reuse are disabled
+for CPU transient buffers; this is scoped release, not guaranteed memory zeroing.
+
+## ASR integration verification
+
+Ordinary tests and doc tests require no model downloads. Explicit integration
+runs require local resources. To generate independent expectations, install
+`onnx-asr==0.12.0`, `onnxruntime==1.20.1`, and `soundfile` in a development-only
+Python environment. Prepare explicitly authorized **mono 16 kHz WAV** samples
+up to 25 seconds so the reference and Rust engine receive identical waveforms.
+A local cases JSON initially contains objects such as:
+
+```json
+[
+  { "audio_path": "/absolute/it.wav", "language": "it" },
+  { "audio_path": "/absolute/en.wav", "language": "en" }
+]
+```
+
+```sh
+python scripts/asr_reference.py --model-dir "$AURORA_ASR_MODEL_DIR" \
+  --cases /absolute/cases-input.json --output /absolute/cases-reference.json
+export AURORA_ASR_TEST_CASES=/absolute/cases-reference.json
+cargo test --workspace --locked --test parakeet -- --ignored --test-threads=1
+cargo test --workspace --locked ready_engine_is_reused -- --ignored
+```
+
+The reference helper reads local files only and uses the selected export's exact
+`nemo128.onnx` graph. Its output contains reference text and is an explicitly
+requested test artifact. Do not use private recordings without authorization.
+The tests check IT/EN text parity, reversed repeated calls on one engine, input
+errors, platform-provider inference, isolated invalid-runtime processes, and
+ready-state reuse. The isolated subprocesses prevent environment/global ORT
+state from contaminating other tests.
+
+Local verification used two CC-BY-4.0 public examples:
+[MINDS-14 Italian](https://huggingface.co/datasets/PolyAI/minds14),
+`it-IT~CASH_DEPOSIT/CAe448511ca16ebe60e67e3b2cd2d159f2_1.wav` (9.52 seconds),
+and [FLEURS English](https://huggingface.co/datasets/google/fleurs),
+`en_us/validation`, row 0, ID 1548 (6.54 seconds). The Italian source was decoded
+and resampled offline with FFmpeg to mono Float32 16 kHz for identical-input
+comparison. Reference generation, CPU parity, repeated calls, real Silero, and
+platform fallback passed on macOS arm64. CoreML session initialization failed
+and CPU fallback succeeded; actual CoreML acceleration is not validated.
+Windows/DirectML and Linux/CUDA execution remain unverified on real hardware.
+
+A headless probe can validate the release `panic = "abort"` configuration:
+
+```sh
+cargo run --release --locked --example engine_probe
+```
+
+It prints only readiness or safe failure diagnostics. Missing configuration,
+a missing runtime, a non-library runtime file, and an incompatible-version test
+library were checked in release and
+returned `unavailable` without terminating the process. The macOS release bundle
+also opened without resource configuration and successfully imported a WAV through
+the native picker.
+
+Native dialog selection, cancellation, replacement, and removal were verified
+on macOS. Cross-application invalid drag-and-drop gestures have not been verified
+through UI automation in this session.

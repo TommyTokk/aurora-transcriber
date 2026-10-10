@@ -25,6 +25,8 @@ pub enum VadError {
     ModelIo(#[from] std::io::Error),
     #[error("The VAD model path must refer to a file")]
     ModelNotFile,
+    #[error("Configure an absolute path to a trusted ONNX Runtime 1.20.1 library")]
+    RuntimeLibrary,
     #[error("The model does not match the Silero v5.1 ONNX contract")]
     ModelContract,
     #[error("Audio samples must be finite and within [-1, 1]")]
