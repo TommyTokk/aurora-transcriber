@@ -16,6 +16,9 @@ serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
 thiserror = "2.0"
+libloading = "0.8"
+sha2 = "0.10"
+regex = "1"
 
 # ONNX Runtime - Base (Dynamic loading)
 ort = { version = "=2.0.0-rc.9", default-features = false, features = ["load-dynamic"] }

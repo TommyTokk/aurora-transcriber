@@ -8,3 +8,7 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# Streaming multi-gigabyte model integrity checks must also stay fast in dev builds.
+[profile.dev.package.sha2]
+opt-level = 3

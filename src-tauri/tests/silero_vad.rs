@@ -1,4 +1,4 @@
-//! Explicit integration tests requiring a local Silero v5.1 model and ORT 1.20.x.
+//! Explicit integration tests requiring a local Silero v5.1 model and ORT 1.20.1.
 
 use std::path::PathBuf;
 
@@ -10,7 +10,7 @@ fn local_vad() -> anyhow::Result<SileroVad> {
         anyhow::anyhow!("Set AURORA_SILERO_MODEL to the local Silero v5.1 ONNX file")
     })?);
     let runtime = PathBuf::from(std::env::var_os("ORT_DYLIB_PATH").ok_or_else(|| {
-        anyhow::anyhow!("Set ORT_DYLIB_PATH to the local ONNX Runtime 1.20.x library")
+        anyhow::anyhow!("Set ORT_DYLIB_PATH to the local ONNX Runtime 1.20.1 library")
     })?);
     anyhow::ensure!(
         runtime.is_file(),
@@ -21,7 +21,7 @@ fn local_vad() -> anyhow::Result<SileroVad> {
 
 /// Exercises real inference, zero-length input, final padding, and repeated calls.
 #[test]
-#[ignore = "requires local Silero v5.1 and ONNX Runtime 1.20.x"]
+#[ignore = "requires local Silero v5.1 and ONNX Runtime 1.20.1"]
 fn local_silero_silence_and_repeated_calls() -> anyhow::Result<()> {
     let mut vad = local_vad()?;
     assert!(vad.chunk_audio(&[])?.is_empty());
