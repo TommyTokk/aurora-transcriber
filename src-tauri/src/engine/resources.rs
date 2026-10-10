@@ -7,7 +7,7 @@ use std::{fs::File, io::Read, path::Path};
 /// Hugging Face revision of istupakov/parakeet-tdt-0.6b-v3-onnx.
 pub const REVISION: &str = "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce";
 /// Required FP32 files and their SHA-256 hashes at the pinned revision.
-const FILES: &[(&str, &str)] = &[
+pub(crate) const FILES: &[(&str, &str)] = &[
     (
         "encoder-model.onnx",
         "98a74b21b4cc0017c1e7030319a4a96f4a9506e50f0708f3a516d02a77c96bb1",
@@ -43,7 +43,7 @@ struct Config {
 }
 
 /// Streams weights through a bounded buffer and validates pinned model metadata.
-pub(super) fn validate(dir: &Path) -> Result<(), EngineError> {
+pub(crate) fn validate(dir: &Path) -> Result<(), EngineError> {
     if !dir.is_absolute() || !dir.is_dir() {
         return Err(EngineError::Configuration);
     }
@@ -64,7 +64,7 @@ pub(super) fn validate(dir: &Path) -> Result<(), EngineError> {
 }
 
 /// Rejects missing, non-file, truncated, or modified resources without logging paths.
-fn verify_file(path: &Path, expected: &str) -> Result<(), EngineError> {
+pub(crate) fn verify_file(path: &Path, expected: &str) -> Result<(), EngineError> {
     let mut file = File::open(path).map_err(|_| EngineError::Resources)?;
     if !file
         .metadata()

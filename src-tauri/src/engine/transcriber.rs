@@ -27,7 +27,8 @@ pub struct TranscriberEngine {
 impl TranscriberEngine {
     /// Loads the pinned local export using platform acceleration with CPU fallback.
     ///
-    /// Requires absolute `ORT_DYLIB_PATH` pointing to trusted ONNX Runtime 1.20.1.
+    /// The desktop initializes bundled ONNX Runtime 1.20.1 first. Standalone tools
+    /// require an absolute `ORT_DYLIB_PATH` before their first constructor.
     /// This synchronous operation must run on a blocking worker in Tauri.
     ///
     /// ```no_run

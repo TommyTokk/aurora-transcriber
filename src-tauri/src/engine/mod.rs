@@ -1,8 +1,9 @@
 //! Offline Parakeet TDT v3 inference and one-time native application state.
 
 mod contract;
+pub(crate) mod fetcher;
 mod providers;
-mod resources;
+pub(crate) mod resources;
 pub(crate) mod runtime;
 pub(crate) mod state;
 mod tdt;
@@ -19,7 +20,7 @@ pub use transcriber::TranscriberEngine;
 /// Safe domain messages; underlying paths and runtime diagnostics stay out of IPC.
 #[derive(Debug, Error)]
 pub enum EngineError {
-    #[error("Configure absolute AURORA_ASR_MODEL_DIR and ORT_DYLIB_PATH paths.")]
+    #[error("Configure a trusted absolute ORT_DYLIB_PATH and download the supported models.")]
     Configuration,
     #[error("The local model files do not match the supported Parakeet FP32 export.")]
     Resources,

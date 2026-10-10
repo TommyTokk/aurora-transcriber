@@ -63,7 +63,10 @@ export function useAudioImport() {
     };
   }, [native]);
   const busy =
-    pending || update.phase === "picking" || update.phase === "validating";
+    pending ||
+    update.processing ||
+    update.phase === "picking" ||
+    update.phase === "validating";
   /** Invokes a path-free native action and displays safe command failures. */
   async function perform(command: "choose_audio_file" | "clear_audio_file") {
     if (!connected || busy) return;

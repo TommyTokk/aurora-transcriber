@@ -21,7 +21,8 @@ pub struct SileroVad {
 impl SileroVad {
     /// Loads a local Silero v5.1 model once and validates its tensor contract.
     ///
-    /// Set absolute `ORT_DYLIB_PATH` to trusted ONNX Runtime 1.20.1 before use.
+    /// The desktop initializes its bundled runtime first; standalone tools set
+    /// absolute `ORT_DYLIB_PATH` to trusted ONNX Runtime 1.20.1 before use.
     /// Shared preflight rejects missing or incompatible libraries before ORT calls.
     /// No model or runtime is downloaded. Future Tauri callers must retain
     /// this session in application state and initialize it on a blocking worker.
