@@ -8,6 +8,12 @@
   --ink: #2b2629;
   --muted: #69636d;
   --accent-ink: #454477;
+  --panel-border: #e4e0f0;
+  --field-border: #cfc5de;
+  --button-border: #b8a5da;
+  --button-background: #67508b;
+  --button-surface: #f6f2fc;
+  --button-text: #4a3a64;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--ink);
   background: var(--background);
@@ -341,4 +347,142 @@ h1 span {
     padding: 12px;
     gap: 9px;
   }
+}
+
+/* Independent workspace panels keep progress, editing, and persistence easy to scan. */
+.transcription-panel {
+  margin-top: 1.25rem;
+  padding: 1.4rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 1.25rem;
+  background: rgba(255, 255, 255, 0.8);
+  text-align: left;
+}
+.transcription-panel h2 {
+  font-size: 1.15rem;
+  margin: 0 0 0.75rem;
+  overflow-wrap: anywhere;
+}
+.transcription-panel p {
+  margin: 0 0 0.8rem;
+}
+.muted {
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.action-row,
+.transcript-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.transcript-actions {
+  margin-top: 1rem;
+}
+.transcript-actions p {
+  width: 100%;
+}
+.primary-button,
+.secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.8rem;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+  border: 1px solid var(--button-border);
+}
+.primary-button {
+  background: var(--button-background);
+  color: white;
+}
+.secondary-button {
+  background: var(--button-surface);
+  color: var(--button-text);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+progress {
+  width: 100%;
+  height: 0.8rem;
+  accent-color: var(--button-background);
+  margin-bottom: 1rem;
+}
+.segment-editor {
+  margin: 1rem 0;
+}
+.segment-editor label {
+  display: block;
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+  color: var(--muted);
+}
+.segment-editor textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 5rem;
+  padding: 0.8rem;
+  font: inherit;
+  line-height: 1.6;
+  border: 1px solid var(--field-border);
+  border-radius: 0.75rem;
+  background: #fff;
+  color: var(--ink);
+}
+.archive-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.archive-entry {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.8rem;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--panel-border);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.archive-entry span {
+  overflow-wrap: anywhere;
+}
+.archive-entry time {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.unsaved-dialog {
+  max-width: min(28rem, calc(100vw - 2rem));
+  border: 1px solid var(--field-border);
+  border-radius: 1.25rem;
+  padding: 1.5rem;
+  color: var(--ink);
+}
+.unsaved-dialog::backdrop {
+  background: rgba(40, 30, 60, 0.35);
+}
+
+textarea:focus-visible {
+  outline: 3px solid var(--accent-ink);
+  outline-offset: 3px;
+}
+
+.model-path {
+  overflow-wrap: anywhere;
+  font-size: 0.9rem;
+}
+.models-panel h2 {
+  margin-bottom: 0.75rem;
 }

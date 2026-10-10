@@ -110,3 +110,32 @@ fn import_snapshots_serialize_without_paths() -> Result<(), serde_json::Error> {
     }
     Ok(())
 }
+
+/// Verifies opaque selection binding, busy native import rejection, and path-free snapshots.
+#[test]
+fn selected_paths_stay_private_and_ids_are_bound() -> Result<(), String> {
+    let app = tauri::test::mock_app();
+    let id = uuid::Uuid::new_v4().to_string();
+    let state = super::ImportState(std::sync::Mutex::new(ImportUpdate {
+        phase: ImportPhase::Ready,
+        audio_id: Some(id.clone()),
+        path: Some(std::path::PathBuf::from("/private/native/voice.wav")),
+        metadata: Some(super::AudioMetadata {
+            name: "voice.wav".into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }));
+    assert!(state.acquire(app.handle(), "stale").is_err());
+    let (path, name) = state.acquire(app.handle(), &id)?;
+    assert_eq!(name, "voice.wav");
+    assert_eq!(path, std::path::PathBuf::from("/private/native/voice.wav"));
+    let mut current = state.0.lock().map_err(|_| "lock")?;
+    assert!(current.begin(ImportPhase::Picking).is_err());
+    let json = serde_json::to_string(&*current).map_err(|_| "serialization")?;
+    assert!(!json.contains("/private/native"));
+    drop(current);
+    state.release(app.handle());
+    state.acquire(app.handle(), &id)?;
+    Ok(())
+}

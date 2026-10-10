@@ -28,3 +28,8 @@ rustc-ice-*.txt
 
 AGENTS.md
 plan.md
+
+# Private local verification recordings and development resources
+audio_samples/
+models/
+transcripts/

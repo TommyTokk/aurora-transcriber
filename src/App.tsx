@@ -2,6 +2,14 @@ import { AlertCircle, AudioLines, LockKeyhole, Sparkles } from "lucide-react";
 import { AudioFileCard } from "./components/AudioFileCard";
 import { DropZone } from "./components/DropZone";
 import { useAudioImport } from "./hooks/useAudioImport";
+import { useTranscription } from "./hooks/useTranscription";
+import { TranscriptionControls } from "./components/TranscriptionControls";
+import { ProgressTracker } from "./components/ProgressTracker";
+import { TranscriptEditor } from "./components/TranscriptEditor";
+import { TranscriptActions } from "./components/TranscriptActions";
+import { TranscriptArchive } from "./components/TranscriptArchive";
+import { Models } from "./components/Models";
+import { UnsavedDialog } from "./components/UnsavedDialog";
 /** Renders the local audio workspace with native import and validation states. */
 export default function App() {
   const {
@@ -14,7 +22,8 @@ export default function App() {
     chooseFile,
     removeFile,
   } = useAudioImport();
-  const error = connectionError ?? update.error;
+  const transcription = useTranscription();
+  const error = connectionError ?? update.error ?? transcription.error;
   const status =
     update.phase === "validating"
       ? "Validating audio locally."
@@ -73,13 +82,60 @@ export default function App() {
               Open the AURORA desktop app to choose and validate audio files.
             </p>
           )}
-          {update.phase === "ready" && (
-            <p className="next-step">
-              Your audio is verified. Transcription will arrive in a future
-              update.
-            </p>
-          )}
         </div>
+        {native && (
+          <>
+            <Models
+              model={transcription.model}
+              active={transcription.active}
+              disabled={transcription.pending || !transcription.connected}
+              onDownload={transcription.download}
+            />
+            <TranscriptionControls
+              model={transcription.model}
+              canStart={!!update.audioId && !busy && transcription.connected}
+              active={transcription.active}
+              disabled={transcription.pending || !transcription.connected}
+              onStart={() => {
+                if (update.audioId) transcription.start(update.audioId);
+              }}
+              onCancel={() => {
+                void transcription.cancel();
+              }}
+            />
+            <ProgressTracker job={transcription.job} />
+            {transcription.notice && (
+              <p role="status">{transcription.notice}</p>
+            )}
+            {transcription.hasResult && (
+              <>
+                <TranscriptEditor
+                  name={transcription.name}
+                  segments={transcription.segments}
+                  disabled={transcription.pending || transcription.active}
+                  onEdit={transcription.edit}
+                />
+                <TranscriptActions
+                  dirty={transcription.dirty}
+                  disabled={transcription.pending || transcription.active}
+                  onSave={transcription.save}
+                  onExport={transcription.exportFile}
+                />
+              </>
+            )}
+            <TranscriptArchive
+              entries={transcription.archive}
+              disabled={transcription.pending || transcription.active}
+              onOpen={transcription.open}
+            />
+            {transcription.confirmAction && (
+              <UnsavedDialog
+                onDiscard={transcription.discard}
+                onKeep={transcription.keepEditing}
+              />
+            )}
+          </>
+        )}
         <p className="sr-only" role="status" aria-live="polite">
           {status}
         </p>

@@ -36,6 +36,11 @@ enum ImportPhase {
 /// Snapshot used to recover state when the frontend subscribes or remounts.
 #[derive(Clone, Default, Serialize)]
 pub struct ImportUpdate {
+    #[serde(rename = "audioId")]
+    audio_id: Option<String>,
+    #[serde(skip)]
+    path: Option<std::path::PathBuf>,
+    processing: bool,
     phase: ImportPhase,
     metadata: Option<AudioMetadata>,
     error: Option<String>,
@@ -44,7 +49,7 @@ pub struct ImportUpdate {
 impl ImportUpdate {
     /// Rejects overlapping imports while preserving metadata during selection.
     fn begin(&mut self, phase: ImportPhase) -> Result<(), String> {
-        if matches!(self.phase, ImportPhase::Picking | ImportPhase::Validating) {
+        if self.processing || matches!(self.phase, ImportPhase::Picking | ImportPhase::Validating) {
             return Err("An audio import is already in progress.".into());
         }
         self.phase = phase;
@@ -62,11 +67,46 @@ impl ImportUpdate {
     }
 }
 
-/// Serializes imports and retains only display metadata for the current session.
+/// Serializes imports and retains the native selection privately for the current session.
 #[derive(Default)]
 pub struct ImportState(Mutex<ImportUpdate>);
 
 impl ImportState {
+    /// Reserves the exact native selection and rejects stale IDs or concurrent imports.
+    pub(crate) fn acquire<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        id: &str,
+    ) -> Result<(std::path::PathBuf, String), String> {
+        let mut current = self.0.lock().map_err(|_| "Audio import is unavailable.")?;
+        if current.processing
+            || current.phase != ImportPhase::Ready
+            || current.audio_id.as_deref() != Some(id)
+        {
+            return Err("This audio selection is unavailable or busy.".into());
+        }
+        let path = current
+            .path
+            .clone()
+            .ok_or("Audio selection is unavailable.")?;
+        let name = current
+            .metadata
+            .as_ref()
+            .ok_or("Audio selection is unavailable.")?
+            .name
+            .clone();
+        current.processing = true;
+        let _ = app.emit_to("main", IMPORT_EVENT, &*current);
+        Ok((path, name))
+    }
+    /// Unlocks native import only after the transcription worker has finished.
+    pub(crate) fn release<R: tauri::Runtime>(&self, app: &AppHandle<R>) {
+        if let Ok(mut current) = self.0.lock() {
+            current.processing = false;
+            let _ = app.emit_to("main", IMPORT_EVENT, &*current);
+        }
+    }
+
     /// Reserves the importer so dialogs and native drops cannot overlap.
     fn begin(&self, app: &AppHandle, phase: ImportPhase) -> Result<(), String> {
         let mut current = self.0.lock().map_err(|_| "Audio import is unavailable.")?;
@@ -126,9 +166,15 @@ async fn validate(app: AppHandle, path: std::path::PathBuf) {
             ..Default::default()
         },
     );
-    let result = tauri::async_runtime::spawn_blocking(move || inspect_audio(&path)).await;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        inspect_audio(&path).map(|metadata| (metadata, path))
+    })
+    .await;
     let update = match result {
-        Ok(Ok(metadata)) => ImportUpdate {
+        Ok(Ok((metadata, path))) => ImportUpdate {
+            audio_id: Some(uuid::Uuid::new_v4().to_string()),
+            path: Some(path),
+            processing: false,
             phase: ImportPhase::Ready,
             metadata: Some(metadata),
             error: None,
@@ -137,11 +183,13 @@ async fn validate(app: AppHandle, path: std::path::PathBuf) {
             phase: ImportPhase::Error,
             metadata: None,
             error: Some(error),
+            ..Default::default()
         },
         Err(_) => ImportUpdate {
             phase: ImportPhase::Error,
             metadata: None,
             error: Some("Audio validation could not finish. Please try again.".into()),
+            ..Default::default()
         },
     };
     app.state::<ImportState>().publish(&app, update);
@@ -167,6 +215,7 @@ pub fn choose_audio_file(app: AppHandle, state: State<'_, ImportState>) -> Resul
                             phase: ImportPhase::Error,
                             metadata: None,
                             error: Some("Unable to access this audio file.".into()),
+                            ..Default::default()
                         },
                     ),
                 },
@@ -196,10 +245,12 @@ pub fn audio_import_state(state: State<'_, ImportState>) -> Result<ImportUpdate,
 #[tauri::command]
 pub fn clear_audio_file(app: AppHandle, state: State<'_, ImportState>) -> Result<(), String> {
     let mut current = state.0.lock().map_err(|_| "Audio import is unavailable.")?;
-    if matches!(
-        current.phase,
-        ImportPhase::Picking | ImportPhase::Validating
-    ) {
+    if current.processing
+        || matches!(
+            current.phase,
+            ImportPhase::Picking | ImportPhase::Validating
+        )
+    {
         return Err("An audio import is already in progress.".into());
     }
     // Clear under the same lock to prevent a concurrent native drop being lost.
@@ -237,6 +288,7 @@ pub fn handle_drag_drop(webview: &Webview, event: &WebviewEvent) {
                         phase: ImportPhase::Error,
                         metadata: None,
                         error: Some("Drop one audio file at a time.".into()),
+                        ..Default::default()
                     },
                 );
             } else if let Some(path) = paths.first() {

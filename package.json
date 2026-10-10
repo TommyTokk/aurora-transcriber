@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "test": "node --experimental-strip-types --test src/lib/*.test.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

@@ -32,8 +32,43 @@ pub(crate) fn absolute_env(name: &str) -> Result<PathBuf, EngineError> {
 /// Only trusted native libraries are supported. Loading arbitrary executable code
 /// cannot be sandboxed by this preflight. The handle lives for the process lifetime.
 pub(crate) fn initialize() -> Result<(), EngineError> {
+    if RUNTIME
+        .lock()
+        .map_err(|_| EngineError::Unavailable)?
+        .is_some()
+    {
+        return Ok(());
+    }
     let path = absolute_env("ORT_DYLIB_PATH")?;
     initialize_path(&path)
+}
+
+/// Resolves the bundled macOS runtime before any model constructor can consult development settings.
+pub(crate) fn initialize_desktop<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<(), EngineError> {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::Manager;
+        let path = app
+            .path()
+            .resolve(
+                "onnxruntime/libonnxruntime.1.20.1.dylib",
+                tauri::path::BaseDirectory::Resource,
+            )
+            .map_err(|_| EngineError::RuntimeLibrary)?;
+        // The unsigned local bundle must still contain the exact official library.
+        super::resources::verify_file(
+            &path,
+            "530cdb5a0de774677d369a83ec8912b0242e9769acd12d34b61412ee6ae368ae",
+        )?;
+        initialize_path(&path)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        initialize()
+    }
 }
 
 /// Initializes the global environment once, rejecting a different runtime path.

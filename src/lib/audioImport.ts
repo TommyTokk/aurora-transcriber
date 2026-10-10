@@ -7,6 +7,8 @@ export interface AudioMetadata {
 }
 /** Path-free snapshot shared by native IPC commands and events. */
 export interface ImportUpdate {
+  audioId: string | null;
+  processing: boolean;
   phase: "idle" | "picking" | "validating" | "ready" | "error";
   metadata: AudioMetadata | null;
   error: string | null;
@@ -15,6 +17,8 @@ export const IMPORT_EVENT = "audio-import";
 export const DRAG_EVENT = "audio-drag";
 export const SUPPORTED_FORMATS = "WAV, MP3, FLAC, M4A, OGG";
 export const EMPTY_IMPORT: ImportUpdate = {
+  audioId: null,
+  processing: false,
   phase: "idle",
   metadata: null,
   error: null,
