@@ -21,7 +21,7 @@ fn milestone11_metal_pipeline() -> anyhow::Result<()> {
 /// Only the first ten seconds reach VAD/ASR. Existing model files remain untouched,
 /// and no download or CPU ASR is performed. Optional archive checks write only in this profile.
 fn run_metal_pipeline(source_env: &str, verify_archive_and_cancel: bool) -> anyhow::Result<()> {
-    let source = crate::engine::runtime::absolute_env(source_env)?;
+    let source = crate::resources::absolute_env(source_env)?;
     let profile = tempfile::tempdir()?;
     let base = profile.path().join("models");
     let (asr, vad) = crate::engine::fetcher::paths(&base);

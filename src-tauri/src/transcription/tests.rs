@@ -57,7 +57,7 @@ fn empty_completion_has_no_partial_results() -> Result<(), String> {
 #[test]
 #[ignore = "explicit GGUF download and authorized first ten seconds of audio_samples/audio.m4a"]
 fn milestone7_metal_pipeline() -> anyhow::Result<()> {
-    let profile = crate::engine::runtime::absolute_env("AURORA_M7_PROFILE")?;
+    let profile = crate::resources::absolute_env("AURORA_M7_PROFILE")?;
     let models = crate::model_storage::ModelStorage::new(&profile);
     let app = app();
     app.manage(models);

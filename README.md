@@ -285,9 +285,9 @@ Mac on 2026-10-11; no CPU ASR benchmarks or additional long audio runs were perf
 Historical milestone 5 used the istupakov FP32 ONNX export and verified CPU parity
 against onnx-asr 0.12.0 with short public Italian and English samples. CoreML
 initialization failed and CPU fallback worked. Those results do not describe the
-current GGUF backend. `scripts/asr_reference.py` and the retired ONNX ASR source
-modules remain historical until the milestone 12 cleanup; they are not active
-production inference or required verification steps.
+current GGUF backend. Milestone 12 removed the historical ONNX ASR reference
+script and retired graph, TDT and vocabulary modules; these historical results
+are retained only as documentation.
 
 ## Desktop storage and workflow
 
@@ -527,7 +527,8 @@ Hugging Face metadata at the pinned Handy revision confirmed the configured
 GGUF SHA-256 and exact size (739,508,576 bytes). Native-window interaction and
 new package generation were not performed for this milestone; the backend test
 uses the same provisioning code as the unchanged UI action. Windows/Linux native
-execution remains unverified; packaging and ONNX ASR cleanup remain later work.
+execution remains unverified. These milestone 10 results did not validate packaging;
+ONNX ASR cleanup was subsequently completed in milestone 12.
 
 ## Milestone 7 verification (2026-10-11)
 
@@ -576,3 +577,55 @@ The one-time cleanup ran only after package and inference verification, with AUR
 ```
 
 Preservation hashes for the 12 inventoried files across the existing transcript archive, `audio_samples`, and Handy application data matched before and after cleanup. No shared Hugging Face cache was deleted. The installed configuration is version 1 with `directory: null`; the default models folder is empty. The cleanup was not added to startup, application commands, or the installer.
+
+## VAD-only ONNX Runtime isolation (milestone 12)
+
+Parakeet ASR uses GGUF through transcribe.cpp. Only Silero v5.1 VAD uses
+ONNX Runtime: its private `vad::runtime` module owns the pinned rc.9 loader,
+fallible 1.20.1 C preflight and one process-lifetime retained library handle.
+Repeated model loads reuse the initialized environment; attempts to initialize
+another canonical runtime path are rejected. Silero owns one CPU-only session
+with one intra-op and one inter-op thread, with no ONNX GPU providers enabled.
+The ASR error type and inference modules contain no ORT types or initialization.
+Checksum and absolute environment-path utilities are runtime-independent.
+
+The macOS arm64 desktop keeps its checksum-validated official ONNX Runtime
+1.20.1 dylib, MIT license, third-party notices and checksum manifest. Desktop
+loading uses Tauri resources; `ORT_DYLIB_PATH` is used by standalone VAD tools
+and explicit local tests on macOS. Windows/Linux desktop loading retains the
+existing requirement for an absolute `ORT_DYLIB_PATH` naming a trusted 1.20.1
+library. Their native runtime packaging and execution remain unverified.
+GPU CUDA/Vulkan features refer exclusively to transcribe.cpp ASR.
+
+The Models panel reports the actual ASR backend with transcribe.cpp and the
+independent `VAD: CPU (ONNX)` role. Explicit CPU ASR remains available, while
+Auto and explicit GPU selection keep their existing GPU-only policy. IPC shapes,
+model checksums, downloads, cancellation and joint 300-second idle unloading
+are unchanged. Legacy user-owned ONNX models remain on disk and are ignored;
+no automatic cleanup or downloads were introduced.
+
+A lightweight local runtime test checks repeated initialization and rejects a
+conflicting library path without running any ASR:
+
+```sh
+ORT_DYLIB_PATH="$PWD/src-tauri/resources/onnxruntime/libonnxruntime.1.20.1.dylib" \
+cargo test --workspace --locked --lib vad::runtime::tests::local_runtime_reuse_and_conflicting_path -- --ignored --exact
+```
+
+Verified on macOS Apple Silicon on 2026-10-11: 73 ordinary Rust tests,
+six frontend tests, the explicit real-runtime reuse/conflicting-path test and
+the real Silero silence/padding/repeated-call test passed. The local Silero file
+matched its pinned digest. Clippy with warnings denied (all local targets),
+Rust/Prettier formatting, native `cargo build --workspace --locked`, frontend
+production build and server rendering of
+unloaded/Metal/explicit CPU runtime labels passed. Cargo feature inspection on
+macOS shows only dynamic-loading ORT features, with no ONNX GPU providers;
+manifest inspection confirms no target-specific ORT GPU features remain.
+The lockfile removes 36 unused packages without introducing new dependency
+versions. All four bundled ORT resource digests passed, and bundle mappings
+retain ORT and transcribe.cpp license resources without ASR ONNX graphs.
+Cross-target Cargo tree inspection could not finish offline because some
+non-macOS dependencies are not cached; no downloads were performed. Native
+Windows/Linux execution, new app/DMG packaging and native-window interaction
+were not tested here. No ASR inference, benchmark or user-owned file changes
+were performed.

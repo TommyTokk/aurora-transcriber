@@ -1,7 +1,6 @@
 //! Immutable export identity and streaming resource integrity checks.
 use super::EngineError;
-use sha2::{Digest, Sha256};
-use std::{fs::File, io::Read, path::Path};
+use std::path::Path;
 
 /// Official Handy conversion revision, confirmed through Hugging Face model metadata.
 pub const REVISION: &str = super::manifest::PARAKEET.revision;
@@ -18,27 +17,7 @@ pub(crate) fn validate(dir: &Path) -> Result<(), EngineError> {
 
 /// Rejects missing, non-file, truncated, or modified resources without logging paths.
 pub(crate) fn verify_file(path: &Path, expected: &str) -> Result<(), EngineError> {
-    let mut file = File::open(path).map_err(|_| EngineError::Resources)?;
-    if !file
-        .metadata()
-        .map_err(|_| EngineError::Resources)?
-        .is_file()
-    {
-        return Err(EngineError::Resources);
-    }
-    let mut hash = Sha256::new();
-    let mut buffer = [0_u8; 65_536];
-    loop {
-        let count = file.read(&mut buffer).map_err(|_| EngineError::Resources)?;
-        if count == 0 {
-            break;
-        }
-        hash.update(&buffer[..count]);
-    }
-    if format!("{:x}", hash.finalize()) != expected {
-        return Err(EngineError::Resources);
-    }
-    Ok(())
+    crate::resources::verify_file(path, expected).map_err(|_| EngineError::Resources)
 }
 
 #[cfg(test)]

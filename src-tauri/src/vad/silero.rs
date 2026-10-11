@@ -24,13 +24,13 @@ impl SileroVad {
     /// The desktop initializes its bundled runtime first; standalone tools set
     /// absolute `ORT_DYLIB_PATH` to trusted ONNX Runtime 1.20.1 before use.
     /// Shared preflight rejects missing or incompatible libraries before ORT calls.
-    /// No model or runtime is downloaded. Future Tauri callers must retain
+    /// No model or runtime is downloaded. Tauri callers retain
     /// this session in application state and initialize it on a blocking worker.
     pub fn new(model_path: &Path) -> Result<Self, VadError> {
         if !model_path.metadata()?.is_file() {
             return Err(VadError::ModelNotFile);
         }
-        crate::engine::runtime::initialize().map_err(|_| VadError::RuntimeLibrary)?;
+        super::runtime::initialize()?;
         let session = Session::builder()?
             // The default CPU provider disables its arena allocator.
             .with_execution_providers([CPUExecutionProvider::default().build()])?
