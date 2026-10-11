@@ -29,7 +29,7 @@ regex = "1"
 uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
 
-# ONNX Runtime - Base (Dynamic loading)
+# Silero VAD only: pinned CPU runtime with trusted dynamic loading.
 ort = { version = "=2.0.0-rc.9", default-features = false, features = ["load-dynamic"] }
 
 # Keep the prerelease FFI dependency aligned with the pinned wrapper.
@@ -39,24 +39,15 @@ ort-sys = { version = "=2.0.0-rc.9", default-features = false }
 transcribe-cpp = { version = "=0.2.4", default-features = false }
 transcribe-cpp-sys = { version = "=0.2.4", default-features = false }
 
-# Audio & Tokenizers
+# Audio decoding, resampling and explicit model provisioning
 symphonia = { version = "0.5", features = ["all"] }
 rubato = "0.15"
 num-integer = "0.1"
-ndarray = "0.15"
-tokenizers = "0.20"
 hf-hub = "0.4"
 
-# Target-specific Execution Providers
+# Native ASR acceleration; ONNX VAD remains CPU-only on every target.
 [target.'cfg(target_os = "macos")'.dependencies]
-ort = { version = "=2.0.0-rc.9", default-features = false, features = ["coreml"] }
 transcribe-cpp = { version = "=0.2.4", default-features = false, features = ["metal"] }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-ort = { version = "=2.0.0-rc.9", default-features = false, features = ["directml", "cuda"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-ort = { version = "=2.0.0-rc.9", default-features = false, features = ["cuda"] }
 
 [build-dependencies]
 sha2 = "0.10"

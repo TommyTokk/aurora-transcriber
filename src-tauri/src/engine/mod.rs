@@ -10,7 +10,6 @@ pub(crate) mod fetcher;
 pub(crate) mod manifest;
 mod providers;
 pub(crate) mod resources;
-pub(crate) mod runtime;
 pub(crate) mod state;
 mod transcriber;
 
@@ -36,14 +35,10 @@ pub enum EngineError {
     Resources,
     #[error("The GGUF model does not match the supported Parakeet TDT v3 contract.")]
     ModelContract,
-    #[error("ONNX Runtime 1.20.1 could not be loaded or its API is incompatible.")]
-    RuntimeLibrary,
     #[error("Audio must be finite mono 16 kHz samples within [-1, 1], at most 25 seconds.")]
     InvalidSamples,
     #[error("The transcription model returned invalid output.")]
     InvalidOutput,
-    #[error("The Silero ONNX runtime could not be initialized.")]
-    OnnxRuntime(#[from] ort::Error),
     #[error(
         "No compatible ASR GPU could be initialized. Check GPU drivers and build backends, select another GPU, or explicitly choose CPU."
     )]

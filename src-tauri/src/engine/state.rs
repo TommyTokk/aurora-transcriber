@@ -236,7 +236,7 @@ impl EngineState {
             );
         })?;
         if self.desktop {
-            super::runtime::initialize_desktop(app).map_err(|error| {
+            crate::vad::initialize_desktop(app).map_err(|error| {
                 self.publish(
                     app,
                     "unavailable",
@@ -266,7 +266,7 @@ impl EngineState {
         let result: Result<Sessions, String> = (|| {
             let (asr, vad) = fetcher::paths(&base);
             // ASR verifies its own files during construction; avoid hashing its GB weights twice.
-            super::resources::verify_file(&vad, fetcher::SILERO_HASH).map_err(|_| {
+            crate::resources::verify_file(&vad, fetcher::SILERO_HASH).map_err(|_| {
                 "Local Silero model failed verification. Download models to repair it.".to_string()
             })?;
             let selection = self.snapshot()?.selection;

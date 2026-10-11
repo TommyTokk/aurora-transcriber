@@ -11,7 +11,7 @@ interface Props {
   onSelect: (selection: AsrSelection) => void;
 }
 
-/** Shows the requested ASR policy separately from the device verified on resident weights. */
+/** Shows the requested ASR policy, verified transcribe.cpp device and independent CPU VAD runtime. */
 export function AsrDeviceControl({ model, disabled, onSelect }: Props) {
   const gpuDevices = model.devices.filter((device) => device.backend !== "CPU");
   const value = selectionValue(model.selection);
@@ -55,9 +55,10 @@ export function AsrDeviceControl({ model, disabled, onSelect }: Props) {
       </div>
       <p role="status">
         {model.phase === "ready" && model.device
-          ? `Active ASR: ${model.device.backend} · ${model.device.description || model.device.name} (${model.device.name})`
-          : "ASR device is not active."}
+          ? `Active ASR (transcribe.cpp): ${model.device.backend} · ${model.device.description || model.device.name} (${model.device.name})`
+          : "ASR (transcribe.cpp) device is not active."}
       </p>
+      <p>VAD: CPU (ONNX)</p>
       <p className="muted" id="asr-device-policy">
         Auto uses Metal on Apple Silicon, CUDA then Vulkan on Windows/Linux. GPU
         choices never switch to CPU. Choosing CPU explicitly enables CPU ASR for

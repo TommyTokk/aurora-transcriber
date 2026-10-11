@@ -3,6 +3,7 @@ pub mod engine;
 pub mod export;
 mod import;
 mod model_storage;
+mod resources;
 mod storage;
 pub mod transcription;
 pub mod vad;

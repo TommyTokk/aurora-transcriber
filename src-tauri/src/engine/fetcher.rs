@@ -224,7 +224,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let storage = ModelStorage::new(directory.path());
         let base = storage.prepare().map_err(anyhow::Error::msg)?;
-        let source = super::super::runtime::absolute_env("AURORA_ASR_MODEL_DIR")?;
+        let source = crate::resources::absolute_env("AURORA_ASR_MODEL_DIR")?;
         let (asr, _) = paths(&base);
         std::fs::create_dir_all(&asr)?;
         std::fs::hard_link(

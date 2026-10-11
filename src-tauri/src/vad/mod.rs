@@ -1,8 +1,10 @@
 //! Offline voice detection and borrowed, silence-aware transcription chunks.
 
+mod runtime;
 mod silero;
 mod smart_chunk;
 
+pub(crate) use runtime::initialize_desktop;
 pub use silero::SileroVad;
 use thiserror::Error;
 
