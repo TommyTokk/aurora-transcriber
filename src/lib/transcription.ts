@@ -16,8 +16,23 @@ export interface AsrDevice {
   name: string;
   description: string;
 }
+/** Public model identity; provisioning details and native paths remain in Rust. */
+export interface ModelDescriptor {
+  id: string;
+  name: string;
+  version: string;
+  purpose: "ASR" | "VAD";
+  format: "GGUF" | "ONNX";
+  quantization: string | null;
+}
+/** Formats model identity and the CPU-only VAD role for the Models panel. */
+export function modelLabel(model: ModelDescriptor): string {
+  const details = [model.purpose, model.format];
+  return `${model.name} ${model.version} — ${details.join(" · ")}${model.quantization ? ` · ${model.quantization}` : ""}${model.purpose === "VAD" ? " · CPU" : ""}`;
+}
 /** Ordered, path-free model residency, device selection and download status. */
 export interface ModelSnapshot {
+  models: ModelDescriptor[];
   revision: number;
   selection: AsrSelection;
   devices: AsrDevice[];
@@ -76,6 +91,7 @@ export const EMPTY_JOB: TranscriptionSnapshot = {
   error: null,
 };
 export const EMPTY_MODEL: ModelSnapshot = {
+  models: [],
   revision: -1,
   selection: { mode: "auto" },
   devices: [],
