@@ -6,6 +6,8 @@ import {
   EMPTY_MODEL,
   isJobActive,
   isNewSnapshot,
+  isNewModelSnapshot,
+  type AsrSelection,
   type ModelSnapshot,
   type SubtitleSegment,
   type TranscriptionSnapshot,
@@ -16,6 +18,7 @@ import {
 /** Coordinates native jobs, edited text, explicit persistence, and archive reopening. */
 export function useTranscription() {
   const [model, setModel] = useState(EMPTY_MODEL);
+  const latestModel = useRef(EMPTY_MODEL);
   const [job, setJob] = useState(EMPTY_JOB);
   const latest = useRef(EMPTY_JOB);
   const [segments, setSegments] = useState<SubtitleSegment[]>([]);
@@ -37,7 +40,6 @@ export function useTranscription() {
   useEffect(() => {
     if (!native) return;
     let disposed = false;
-    let modelEvent = false;
     const listeners: UnlistenFn[] = [];
     /** Releases subscriptions whose async setup completes after unmount. */
     function retain(unlisten: UnlistenFn) {
@@ -57,6 +59,13 @@ export function useTranscription() {
       setHasResult(incoming.phase === "completed");
       if (incoming.error) setError(incoming.error);
     }
+    /** Accepts device events and command responses only when their revision advances. */
+    function receiveModel(incoming: ModelSnapshot) {
+      if (disposed || !isNewModelSnapshot(latestModel.current, incoming))
+        return;
+      latestModel.current = incoming;
+      setModel(incoming);
+    }
     /** Subscribes before state reads so fast jobs and model loads are not missed. */
     async function connect() {
       try {
@@ -68,21 +77,21 @@ export function useTranscription() {
         );
         retain(
           await listen<ModelSnapshot>("transcriber-state", (event) => {
-            if (!disposed) {
-              modelEvent = true;
-              setModel(event.payload);
-            }
+            receiveModel(event.payload);
           }),
         );
         if (disposed) return;
         const [initialJob, initialModel, entries] = await Promise.all([
           invoke<TranscriptionSnapshot>("transcription_state"),
-          invoke<ModelSnapshot>("transcriber_state"),
+          // Device discovery errors must not disable the local transcript archive.
+          invoke<ModelSnapshot>("transcriber_devices").catch(() =>
+            invoke<ModelSnapshot>("transcriber_state"),
+          ),
           invoke<TranscriptSummary[]>("list_transcripts"),
         ]);
         if (disposed) return;
         receive(initialJob);
-        if (!modelEvent) setModel(initialModel);
+        receiveModel(initialModel);
         setArchive(entries);
         setConnected(true);
       } catch {
@@ -157,6 +166,19 @@ export function useTranscription() {
   function download() {
     void perform(async () => {
       await invoke("download_models");
+    });
+  }
+  /** Explicitly applies one ASR preference and reloads models while foreground controls are reserved. */
+  function selectDevice(selection: AsrSelection) {
+    void perform(async () => {
+      const incoming = await invoke<ModelSnapshot>("select_asr_device", {
+        selection,
+      });
+      // A newer completion or discovery event can arrive before the command returns.
+      if (isNewModelSnapshot(latestModel.current, incoming)) {
+        latestModel.current = incoming;
+        setModel(incoming);
+      }
     });
   }
   /** Edits one segment without modifying original-file timestamps. */
@@ -239,6 +261,7 @@ export function useTranscription() {
     start,
     cancel,
     download,
+    selectDevice,
     edit,
     save,
     open,

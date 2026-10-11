@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { ModelSnapshot } from "../lib/transcription";
+import type { AsrSelection, ModelSnapshot } from "../lib/transcription";
+import { AsrDeviceControl } from "./AsrDeviceControl";
 
 interface StorageSnapshot {
   path: string;
@@ -15,9 +16,16 @@ interface Props {
   active: boolean;
   disabled: boolean;
   onDownload: () => void;
+  onSelectDevice: (selection: AsrSelection) => void;
 }
 /** Displays native model storage and invokes only commands without path arguments. */
-export function Models({ model, active, disabled, onDownload }: Props) {
+export function Models({
+  model,
+  active,
+  disabled,
+  onDownload,
+  onSelectDevice,
+}: Props) {
   const [storage, setStorage] = useState<StorageSnapshot | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -117,6 +125,11 @@ export function Models({ model, active, disabled, onDownload }: Props) {
   return (
     <section className="transcription-panel models-panel" aria-label="Models">
       <h2>Models</h2>
+      <AsrDeviceControl
+        model={model}
+        disabled={busy}
+        onSelect={onSelectDevice}
+      />
       <p className="model-path">{storage?.path ?? "Resolving model folder…"}</p>
       <p className="muted">
         {storage?.isDefault
@@ -132,7 +145,7 @@ export function Models({ model, active, disabled, onDownload }: Props) {
         {storage?.error
           ? "Model folder unavailable"
           : model.phase === "ready"
-            ? `Verified models ready · ${model.provider}`
+            ? "Verified models ready"
             : model.phase === "unloaded"
               ? "Models on disk; sessions will reload offline."
               : model.phase === "downloading"

@@ -90,6 +90,7 @@ export default function App() {
               active={transcription.active}
               disabled={transcription.pending || !transcription.connected}
               onDownload={transcription.download}
+              onSelectDevice={transcription.selectDevice}
             />
             <TranscriptionControls
               model={transcription.model}

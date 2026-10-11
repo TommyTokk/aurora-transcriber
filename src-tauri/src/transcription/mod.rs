@@ -237,4 +237,6 @@ pub fn transcription_state(
     state.snapshot()
 }
 #[cfg(test)]
+mod smoke;
+#[cfg(test)]
 mod tests;

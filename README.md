@@ -32,7 +32,7 @@ The workspace includes transcription controls, real progress, a segment editor,
 TXT/SRT/VTT export, and an explicitly saved local transcript archive. Use **Download
 models** to provision the supported ASR and VAD files. All transcription runs offline.
 ASR weights and the CPU VAD session remain resident until more than five idle minutes.
-Each file gets a scoped Metal ASR session, released on completion, cancellation, or failure.
+Each file gets a scoped ASR session on the selected device, released on completion, cancellation, or failure.
 The reference icon supplies colors only; the bundled icon is unchanged.
 
 `npm run dev` provides a browser layout preview; native import is available
@@ -153,12 +153,55 @@ Streaming checksum verification precedes native parsing. Metadata must identify
 `parakeet`, `tdt-0.6b-v3`, and a 16 kHz sample rate. Weights are CC-BY-4.0;
 attribute NVIDIA's original model and Handy's conversion when redistributing them.
 
-This release requires **Apple Silicon and a working Metal GPU** for ASR.
-Initialization explicitly requests Metal and verifies the resolved backend and
-GPU device. CPU fallback, unresolved devices, and unsupported platforms return
-safe errors; import and the archive remain available. There is no CPU selector or
-`new_cpu` constructor. Windows/Linux GPU discovery and user device selection remain
-in milestone 8. CPU decoding/resampling and Silero VAD are expected.
+ASR defaults to **Auto, GPU only**: Metal on macOS Apple Silicon, CUDA then Vulkan
+on Windows/Linux. Auto tries registered GPUs in backend priority and registry order,
+releasing each failed attempt before the next. It never uses CPU ASR implicitly.
+An explicit GPU selection must initialize that exact native device or fail.
+**CPU · explicit opt-in** enables strict CPU ASR only when selected by the user;
+CPU is never a fallback for Auto or GPU selections. CPU decoding/resampling,
+Silero VAD and auxiliary native scheduler operations remain expected.
+
+The Models panel distinguishes the requested selection from the actual initialized
+backend/device. Choices apply immediately while model operations are idle, freeing
+old weights before reload; failures retain the requested choice and expose an
+actionable safe error. **Reload selection** retries the same choice. Preference is
+session-only, survives model-folder changes and inactivity reload, and resets to
+Auto on every app restart. Device IDs are opaque and valid only in the current
+process. Discovery reports the static native registry, not Cargo features; driver
+or device changes may require restarting the application.
+
+`TranscriberEngine::new(&Path)` retains GPU-only Auto behavior.
+`new_with_selection(&Path, &AsrSelection)` accepts `Auto {}`, `Cpu {}` or
+`Device { id }`. `discover_devices()` reports supported registered devices without
+loading weights. `device()` returns the verified hardware description and backend;
+`provider()` remains available. Verification checks the exact native handle,
+backend and GPU/CPU class after model loading and before each file session.
+Import and the archive remain usable when ASR is unavailable.
+
+### Native build backends
+
+macOS enables static Metal by default; GPU ASR is supported on Apple Silicon.
+Intel macOS GPU ASR and other operating systems are unsupported by the application
+policy; CPU remains an explicit option wherever the native model can initialize.
+Windows/Linux default builds have no GPU backend enabled. Enable the optional
+features when building on those systems:
+
+```sh
+cargo build --release --locked --features asr-cuda
+cargo build --release --locked --features asr-vulkan
+cargo build --release --locked --features asr-cuda,asr-vulkan
+# With Tauri packaging on Windows/Linux:
+npm run tauri -- build --features asr-cuda,asr-vulkan
+```
+
+CUDA builds require NVIDIA's CUDA toolkit (including nvcc), a compatible native
+C++ toolchain and runtime NVIDIA drivers. Vulkan builds require Vulkan headers,
+libraries and the `glslc` shader compiler (Vulkan SDK), plus a compatible runtime
+GPU driver. Both require CMake and the normal Tauri platform prerequisites.
+CUDA/Vulkan features are rejected outside Windows/Linux. Backends remain statically
+linked; there is no native provider-directory picker. Windows/Linux still require
+the existing trusted ONNX Runtime 1.20.1 setup for CPU Silero VAD. CUDA/Vulkan builds,
+hardware execution and installers are **unverified** until exercised on actual targets.
 
 `transcribe_chunk(&mut self, &[f32]) -> Result<String, EngineError>` preserves the
 finite mono 16 kHz contract in `[-1, 1]`, at most 25 seconds, with empty input
@@ -176,13 +219,22 @@ Returned text belongs to the caller; release does not promise allocator zeroing.
 Native logging is disabled before loading, and `TRANSCRIBE_DUMP_DIR` is rejected
 when nonempty because upstream tensor dumps would bypass logging controls.
 
-The existing command/event snapshot stays
-`{ phase, provider, error, missing, downloadFile, percentage }`, with the same
-phases and `provider: "Metal"` only after runtime verification. Error messages never
-include native error strings, partial transcripts or model paths. Model folder
-configuration, explicit downloads, retries and atomic verified promotion remain.
-The required installation is GGUF ASR plus `silero_vad.onnx`; old ASR ONNX files
-are preserved on disk but ignored. No automatic model download or audio cache is added.
+The `transcriber-state` event and `transcriber_state()` snapshot retain phase,
+provider, error, missing, downloadFile and percentage, and add revision, selection,
+devices and device. Provider is `Metal`, `CUDA`, `Vulkan` or `CPU` only for verified
+ready models; device is null during loading, missing/unavailable status and inactivity
+unload. Selection is `{ mode: "auto" }`, `{ mode: "cpu" }` or
+`{ mode: "device", id }`. Catalog entries are `{ id, backend, name, description }`.
+`transcriber_devices()` discovers hardware on a blocking worker and returns the same
+snapshot. `select_asr_device({ selection })` reserves model operations and reloads
+offline. Unknown IDs, CPU disguised as a GPU ID and unexpected payload fields are
+rejected. Monotonic revisions prevent stale reads/events from restoring old device
+status. Hardware diagnostics contain no native handles, audio paths or transcript
+contents; errors omit native error strings and model paths.
+
+Model folder configuration, explicit downloads, retries and atomic verified promotion
+remain. The required installation is GGUF ASR plus Silero v5.1 ONNX. Legacy ONNX ASR
+files are preserved on disk but ignored. No automatic model download or audio cache is added.
 
 The desktop resolves models through native storage. Standalone GGUF probes use
 `AURORA_ASR_MODEL_DIR` without ORT. Tests that also use Silero require trusted
@@ -212,6 +264,23 @@ export AURORA_M7_PROFILE="/absolute/application/data/profile"
 export ORT_DYLIB_PATH="/absolute/trusted/libonnxruntime.1.20.1.dylib"
 cargo test --workspace --locked --lib transcription::tests::milestone7_metal_pipeline -- --ignored --exact --nocapture --test-threads=1
 ```
+
+Milestone 8 adds a separate **offline** check using already verified local models.
+It creates an isolated temporary profile with hard links, leaves user configuration
+and models untouched, and checks exact explicit Metal placement, the same authorized
+<=10-second pipeline, resource release, and selection preservation across offline reload:
+
+```sh
+export AURORA_M8_MODEL_BASE="/absolute/existing/model/folder"
+export ORT_DYLIB_PATH="/absolute/trusted/libonnxruntime.1.20.1.dylib"
+cargo test --workspace --locked --lib transcription::smoke::milestone8_metal_pipeline -- --ignored --exact --nocapture --test-threads=1
+```
+
+Run this ignored test only with authorization for the first ten seconds of
+`audio_samples/audio.m4a`. It prints only a safe pass/fail summary. Ordinary tests
+use simulated GPU loaders and verify CPU opt-in policy without running CPU ASR.
+The Metal pipeline and exact placement were verified on the available Apple Silicon
+Mac on 2026-10-11; no CPU ASR benchmarks or additional long audio runs were performed.
 
 Historical milestone 5 used the istupakov FP32 ONNX export and verified CPU parity
 against onnx-asr 0.12.0 with short public Italian and English samples. CoreML
