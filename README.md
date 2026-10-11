@@ -629,3 +629,102 @@ non-macOS dependencies are not cached; no downloads were performed. Native
 Windows/Linux execution, new app/DMG packaging and native-window interaction
 were not tested here. No ASR inference, benchmark or user-owned file changes
 were performed.
+
+## Milestone 13: functional validation and macOS packaging
+
+Build the local unsigned Apple Silicon packages and verify their composition:
+
+```sh
+npm run tauri -- build --bundles app,dmg -- --locked --offline
+python3 scripts/verify_macos_bundle.py
+python3 -m unittest discover -s scripts -p 'test_verify_macos_bundle.py'
+```
+
+The verifier uses only Python's standard library and macOS `lipo`, `otool` and
+`hdiutil`. It checks the bundled executable against `target/release/aurora`,
+arm64 architecture, system-only native dependencies, absence of development
+rpaths, Metal linkage and embedded Parakeet/GGML diagnostics. Those static checks
+corroborate backend inclusion; the short real Metal test verifies execution.
+ORT's install name is not mistaken for a loaded dependency. Every pinned ORT
+resource and the bundled manifest must match; transcribe.cpp/GGML licenses and
+notice must match their source copies. Unexpected separate native libraries and
+bundled model weights are rejected. Finally, `hdiutil verify` checks DMG integrity.
+Failures return a nonzero exit status; paths can be overridden with `--app`,
+`--dmg` and `--build-binary` for another build directory.
+
+The outputs are `target/release/bundle/macos/AURORA.app` and
+`target/release/bundle/dmg/AURORA_0.1.0_aarch64.dmg`. transcribe.cpp/GGML and Metal
+shader sources remain statically embedded. CPU ONNX Runtime 1.20.1 and native
+license notices are packaged as resources. **Both Parakeet GGUF and Silero v5.1
+ONNX weights remain separately provisioned** in the selected model folder through
+the existing explicit download action; they are not included in the installer.
+
+Repeat ordinary checks without model downloads or real ASR:
+
+```sh
+cargo test --workspace --locked --offline
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked --offline -- -D warnings
+npm test
+npm run format:check
+npm run build
+```
+
+The separately authorized functional checks use existing verified local models:
+
+```sh
+export AURORA_M11_MODEL_BASE="/absolute/existing/model/folder"
+export AURORA_SILERO_MODEL="$AURORA_M11_MODEL_BASE/silero_vad.onnx"
+export ORT_DYLIB_PATH="$PWD/src-tauri/resources/onnxruntime/libonnxruntime.1.20.1.dylib"
+cargo test --workspace --locked --offline --lib transcription::smoke::milestone11_metal_pipeline -- --ignored --exact --nocapture --test-threads=1
+cargo test --workspace --locked --offline --test silero_vad -- --ignored --exact local_silero_silence_and_repeated_calls --test-threads=1
+cargo test --workspace --locked --offline --lib vad::runtime::tests::local_runtime_reuse_and_conflicting_path -- --ignored --exact --test-threads=1
+```
+
+The Metal check uses at most the first ten seconds of `audio_samples/audio.m4a`
+in memory and an isolated temporary profile for cancellation, archive, exports
+and idle release/offline reload. It never prints the personal transcript or
+creates an audio extract. Hard-link isolation can require permission outside a
+filesystem sandbox. DMG creation also requires access to macOS packaging tools.
+
+For native-window validation, generate a non-personal fixture using an already
+installed local voice, then import the WAV from the new `.app` using its dialog:
+
+```sh
+AURORA_M13_TMP=$(mktemp -d /private/tmp/aurora-m13.XXXXXX)
+say -v Samantha -r 160 -o "$AURORA_M13_TMP/synthetic.aiff" \
+  'Aurora checks local speech. This is a short synthetic test.'
+ffmpeg -nostdin -hide_banner -loglevel error \
+  -i "$AURORA_M13_TMP/synthetic.aiff" -t 10 -ar 16000 -ac 1 \
+  -map_metadata -1 "$AURORA_M13_TMP/synthetic.wav"
+ffprobe -v error -show_entries format=duration \
+  -of default=noprint_wrappers=1 "$AURORA_M13_TMP/synthetic.wav"
+```
+
+Check that the fixture is nonempty and no longer than ten seconds; sandboxed
+speech-service access can otherwise produce an empty file. Confirm Metal ASR and
+CPU ONNX VAD labels, start transcription, edit the text and export TXT/SRT/VTT to
+this temporary directory. Do not press Save: archive save/reopen is exercised in
+the isolated backend test, leaving the personal archive unchanged.
+
+Verified on macOS Apple Silicon on 2026-10-11: 73 ordinary Rust tests, six
+frontend tests and five portable verifier tests passed, together with formatting,
+Clippy with warnings denied, the production frontend build and unsigned `.app` /
+`.dmg` packaging. The explicit ten-second Metal pipeline, real Silero fixture and
+runtime reuse/conflicting-path checks passed using local models without downloads.
+The generated app passed executable/resource identity and native linkage checks;
+the DMG passed `hdiutil verify`. The verifier tests reject external dependencies
+(including weak/reexport/upward loads), development rpaths, incorrect architectures,
+resource changes and symlinks while accepting ORT's dylib identity and local rpath.
+
+The generated bundle was launched directly and its process path confirmed.
+Native import and save dialogs, real Metal on Apple M4 Pro (MTL0), CPU ONNX VAD,
+completion at 100%, editing and TXT/SRT/VTT export passed with a 3.732-second local
+synthetic fixture. Export bytes contained the edited text and correct source
+timestamps. The personal archive was unchanged; the app was closed without saving
+an archive entry. No CPU ASR benchmark, long ASR inference, personal audio extract,
+model download or legacy model cleanup was performed.
+
+Signing/notarization, Intel and older macOS execution, Windows/Linux and
+CUDA/Vulkan packaging remain unverified. A declared macOS 11.0 deployment target
+does not establish compatibility with older hardware or systems.
