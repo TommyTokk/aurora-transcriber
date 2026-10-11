@@ -1,5 +1,5 @@
 //! Resident GGUF weights with scoped, serial per-file native inference.
-use super::{providers, resources, EngineError, Provider};
+use super::{providers, resources, AsrSelection, DeviceSnapshot, EngineError, Provider};
 use std::path::Path;
 use transcribe_cpp::{Model, RunOptions, Session, TimestampKind};
 
@@ -8,7 +8,8 @@ const MAX_SAMPLES: usize = 25 * 16_000;
 /// Owns verified Parakeet weights; no session or transcript survives a file operation.
 pub struct TranscriberEngine {
     model: Model,
-    provider: Provider,
+    device: DeviceSnapshot,
+    options: transcribe_cpp::ModelOptions,
 }
 
 /// Owns one file's native results and context; dropping it releases session resources.
@@ -17,33 +18,52 @@ pub struct FileTranscriber {
 }
 
 impl TranscriberEngine {
-    /// Loads the pinned local Q8_0 model on Metal without downloads or CPU fallback.
+    /// Loads the pinned local Q8_0 model on an automatic GPU without CPU fallback.
     ///
     /// Directories must be absolute and contain the verified GGUF filename.
     /// Tauri constructs this on a blocking worker and retains it in application
     /// state until inactivity, a folder change, or shutdown.
     pub fn new(model_dir: &Path) -> Result<Self, EngineError> {
-        let options = providers::options()?;
+        Self::new_with_selection(model_dir, &AsrSelection::Auto {})
+    }
+
+    /// Loads on ordered GPU candidates or the explicitly opted-in CPU, entirely offline.
+    ///
+    /// Failed attempts release model and session allocations before the next GPU
+    /// is tried. Explicit selections produce exactly one candidate and never fall back.
+    pub fn new_with_selection(
+        model_dir: &Path,
+        selection: &AsrSelection,
+    ) -> Result<Self, EngineError> {
+        let candidates = providers::options(selection)?;
         resources::validate(model_dir)?;
-        let model =
-            Model::load_with(model_dir.join(resources::MODEL_FILE), &options).map_err(|error| {
-                eprintln!("AURORA: native Metal model initialization failed.");
-                map_native_error(error)
-            })?;
-        validate_contract(
-            &model.arch(),
-            &model.variant(),
-            model.capabilities().native_sample_rate,
-        )?;
-        let provider = providers::verify(&model)?;
-        // Check session allocation before readiness, without retaining native results.
-        drop(model.session().map_err(map_native_error)?);
-        Ok(Self { model, provider })
+        providers::try_candidates(&candidates, |options| {
+            let model = Model::load_with(model_dir.join(resources::MODEL_FILE), options)
+                .map_err(map_native_error)?;
+            validate_contract(
+                &model.arch(),
+                &model.variant(),
+                model.capabilities().native_sample_rate,
+            )?;
+            let device = providers::verify(&model, options)?;
+            // Check session allocation before readiness, without retaining native results.
+            drop(model.session().map_err(map_native_error)?);
+            Ok(Self {
+                model,
+                device,
+                options: options.clone(),
+            })
+        })
     }
 
     /// Reports only the backend verified during model initialization.
     pub fn provider(&self) -> Provider {
-        self.provider
+        self.device.backend
+    }
+
+    /// Reports the verified process-local device without exposing model or audio paths.
+    pub fn device(&self) -> &DeviceSnapshot {
+        &self.device
     }
 
     /// Opens a scoped session reused by every chunk of one file.
@@ -54,7 +74,7 @@ impl TranscriberEngine {
         &mut self,
         operation: impl FnOnce(&mut FileTranscriber) -> T,
     ) -> Result<T, EngineError> {
-        providers::verify(&self.model)?;
+        providers::verify(&self.model, &self.options)?;
         let mut file = FileTranscriber {
             session: self.model.session().map_err(map_native_error)?,
         };

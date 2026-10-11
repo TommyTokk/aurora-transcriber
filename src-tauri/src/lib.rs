@@ -33,6 +33,8 @@ pub fn run() -> anyhow::Result<()> {
             import::audio_import_state,
             import::clear_audio_file,
             engine::state::transcriber_state,
+            engine::state::transcriber_devices,
+            engine::state::select_asr_device,
             engine::state::download_models,
             model_storage::model_storage_state,
             model_storage::choose_model_directory,

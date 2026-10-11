@@ -7,6 +7,12 @@ edition = "2021"
 name = "aurora_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# Optional native toolchains on Windows/Linux; Metal remains enabled on macOS.
+[features]
+default = []
+asr-cuda = ["transcribe-cpp/cuda", "transcribe-cpp-sys/cuda"]
+asr-vulkan = ["transcribe-cpp/vulkan", "transcribe-cpp-sys/vulkan"]
+
 [dependencies]
 tauri = { version = "2.0", features = [] }
 tauri-plugin-dialog = "2.0" # Required for native file selection

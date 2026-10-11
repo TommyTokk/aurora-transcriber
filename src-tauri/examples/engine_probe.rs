@@ -7,20 +7,25 @@ fn main() {
         .ok_or(aurora_lib::engine::EngineError::Configuration)
         .and_then(|path| TranscriberEngine::new(std::path::Path::new(&path)));
     match result {
-        Ok(engine) => println!("ready: {:?}", engine.provider()),
+        Ok(engine) => println!(
+            "ready: {:?} · {}",
+            engine.provider(),
+            engine.device().description
+        ),
         Err(error) => println!("unavailable: {error}"),
     }
     if std::env::args().any(|argument| argument == "--devices") {
         // Hardware-only diagnostics; never enable native logging or print model paths.
-        println!(
-            "Metal available: {}",
-            transcribe_cpp::backend_available(transcribe_cpp::Backend::Metal)
-        );
-        for device in transcribe_cpp::devices() {
-            println!(
-                "device: {} · {} · {:?}",
-                device.name, device.kind, device.device_type
-            );
+        match aurora_lib::engine::discover_devices() {
+            Ok(devices) => {
+                for device in devices {
+                    println!(
+                        "device: {} · {:?} · {}",
+                        device.name, device.backend, device.description
+                    );
+                }
+            }
+            Err(error) => println!("Device discovery unavailable: {error}"),
         }
     }
 }

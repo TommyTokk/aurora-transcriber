@@ -486,3 +486,32 @@ textarea:focus-visible {
 .models-panel h2 {
   margin-bottom: 0.75rem;
 }
+
+.asr-device-control {
+  margin: 0 0 1rem;
+  padding: 1rem;
+  border: 1px solid var(--field-border);
+  border-radius: 1rem;
+  min-width: 0;
+}
+.asr-device-control legend {
+  font-weight: 600;
+}
+.asr-device-control label {
+  display: block;
+  margin-bottom: 0.5rem;
+}
+.asr-device-control select {
+  max-width: 100%;
+  min-width: 0;
+  padding: 0.65rem;
+  border: 1px solid var(--field-border);
+  border-radius: 0.75rem;
+  background: var(--background);
+  color: inherit;
+  font: inherit;
+}
+.asr-device-control select:focus-visible {
+  outline: 3px solid var(--accent-ink);
+  outline-offset: 2px;
+}

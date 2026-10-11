@@ -1,5 +1,5 @@
 //! Serialized model residency with cheap status snapshots and offline reload.
-use super::{fetcher, EngineError, Provider, TranscriberEngine};
+use super::{fetcher, AsrSelection, DeviceSnapshot, EngineError, Provider, TranscriberEngine};
 use crate::{model_storage::ModelStorage, vad::SileroVad};
 use serde::Serialize;
 use std::{
@@ -16,6 +16,10 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineSnapshot {
+    pub revision: u64,
+    pub selection: AsrSelection,
+    pub devices: Vec<DeviceSnapshot>,
+    pub device: Option<DeviceSnapshot>,
     pub phase: String,
     pub provider: Option<Provider>,
     pub error: Option<String>,
@@ -34,6 +38,14 @@ struct Residency<T> {
     last_used: Instant,
 }
 impl<T> Residency<T> {
+    /// Drops the previous assets before loading a replacement, retaining failures as unloaded.
+    fn replace(&mut self, loader: impl FnOnce() -> Result<T, String>) -> Result<(), String> {
+        self.value = None;
+        let result = loader();
+        self.last_used = Instant::now();
+        self.value = Some(result?);
+        Ok(())
+    }
     /// Reuses a resident value or invokes the offline loader exactly once while locked.
     fn get_or_load(
         &mut self,
@@ -74,6 +86,10 @@ impl Default for EngineState {
                 last_used: Instant::now(),
             }),
             snapshot: Mutex::new(EngineSnapshot {
+                revision: 0,
+                selection: AsrSelection::Auto {},
+                devices: vec![],
+                device: None,
                 phase: "loading".into(),
                 provider: None,
                 error: None,
@@ -122,32 +138,90 @@ impl EngineState {
             let _ = tauri::async_runtime::block_on(worker);
         }
     }
-    /// Updates cheap public status without requiring the session mutex.
+    /// Updates and emits one ordered snapshot under a short lock, independent of inference.
+    fn update<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        operation: impl FnOnce(&mut EngineSnapshot),
+    ) {
+        if let Ok(mut snapshot) = self.snapshot.lock() {
+            operation(&mut snapshot);
+            snapshot.revision += 1;
+            let _ = app.emit_to("main", "transcriber-state", &*snapshot);
+        }
+    }
+
+    /// Updates model residency while preserving the session preference and hardware catalog.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn publish<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         phase: &str,
-        provider: Option<Provider>,
+        device: Option<DeviceSnapshot>,
         error: Option<String>,
         missing: Vec<String>,
         download_file: Option<String>,
         percentage: Option<f32>,
     ) {
-        if let Ok(mut snapshot) = self.snapshot.lock() {
-            *snapshot = EngineSnapshot {
-                phase: phase.into(),
-                provider,
-                error,
-                missing,
-                download_file,
-                percentage,
-            };
-            let _ = app.emit_to("main", "transcriber-state", &*snapshot);
+        self.update(app, |snapshot| {
+            snapshot.phase = phase.into();
+            snapshot.provider = device.as_ref().map(|d| d.backend);
+            snapshot.device = device;
+            snapshot.error = error;
+            snapshot.missing = missing;
+            snapshot.download_file = download_file;
+            snapshot.percentage = percentage;
+        });
+    }
+
+    /// Discovers hardware on a worker even when local model files are missing.
+    fn discover<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>) -> Result<(), String> {
+        let devices = super::discover_devices().map_err(|error| error.to_string())?;
+        self.update(app, |snapshot| snapshot.devices = devices);
+        Ok(())
+    }
+
+    /// Applies a validated preference while reserved, freeing old assets before immediate reload.
+    pub(crate) fn select<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        selection: AsrSelection,
+    ) -> Result<(), String> {
+        // Reject forged, expired and CPU-as-device IDs before touching the current model.
+        if matches!(selection, AsrSelection::Device { .. }) {
+            super::providers::options(&selection).map_err(|error| error.to_string())?;
         }
+        let mut resident = self
+            .resident
+            .lock()
+            .map_err(|_| "Models are unavailable.")?;
+        resident.replace(|| {
+            self.update(app, |snapshot| {
+                snapshot.selection = selection;
+                snapshot.phase = "loading".into();
+                snapshot.provider = None;
+                snapshot.device = None;
+                snapshot.error = None;
+                snapshot.percentage = None;
+                snapshot.download_file = None;
+            });
+            self.load(app)
+        })
     }
     /// Constructs verified local ASR weights and VAD on a worker without network access.
     fn load<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>) -> Result<Sessions, String> {
+        if let Err(error) = self.discover(app) {
+            self.publish(
+                app,
+                "unavailable",
+                None,
+                Some(error.clone()),
+                vec![],
+                None,
+                None,
+            );
+            return Err(error);
+        }
         let base = app.state::<ModelStorage>().prepare().inspect_err(|error| {
             self.publish(
                 app,
@@ -193,7 +267,9 @@ impl EngineState {
             super::resources::verify_file(&vad, fetcher::SILERO_HASH).map_err(|_| {
                 "Local Silero model failed verification. Download models to repair it.".to_string()
             })?;
-            let asr = TranscriberEngine::new(&asr).map_err(|e| e.to_string())?;
+            let selection = self.snapshot()?.selection;
+            let asr = TranscriberEngine::new_with_selection(&asr, &selection)
+                .map_err(|e| e.to_string())?;
             let vad = SileroVad::new(&vad)
                 .map_err(|_| "Unable to initialize the local Silero VAD model.".to_string())?;
             Ok(Sessions { asr, vad })
@@ -202,7 +278,7 @@ impl EngineState {
             Ok(sessions) => self.publish(
                 app,
                 "ready",
-                Some(sessions.asr.provider()),
+                Some(sessions.asr.device().clone()),
                 None,
                 vec![],
                 None,
@@ -229,12 +305,11 @@ impl EngineState {
             .resident
             .lock()
             .map_err(|_| "Models are unavailable.")?;
-        resident.value = None;
         // Missing/corrupt resources are reported by load; the folder choice itself remains successful.
-        if let Ok(sessions) = self.load(app) {
-            resident.value = Some(sessions);
-        }
-        resident.last_used = Instant::now();
+        let _ = resident.replace(|| {
+            self.publish(app, "loading", None, None, vec![], None, None);
+            self.load(app)
+        });
         Ok(())
     }
     /// Pins both sessions throughout one reserved job and updates idle time on every exit.
@@ -248,6 +323,19 @@ impl EngineState {
             .lock()
             .map_err(|_| "Models are unavailable.".to_string())?;
         let sessions = resident.get_or_load(|| self.load(app))?;
+        // A successful download can reuse already resident weights. Restore ready
+        // diagnostics rather than leaving the UI stuck in the downloading phase.
+        if self.snapshot()?.phase != "ready" {
+            self.publish(
+                app,
+                "ready",
+                Some(sessions.asr.device().clone()),
+                None,
+                vec![],
+                None,
+                None,
+            );
+        }
         let result = operation(sessions);
         resident.last_used = Instant::now();
         result
@@ -329,6 +417,46 @@ pub(crate) fn start(app: tauri::AppHandle) {
 pub fn transcriber_state(state: State<'_, EngineState>) -> Result<EngineSnapshot, String> {
     state.snapshot()
 }
+/// Discovers supported devices on a worker and returns the ordered combined status.
+#[tauri::command]
+pub async fn transcriber_devices(app: tauri::AppHandle) -> Result<EngineSnapshot, String> {
+    let worker = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = worker.state::<EngineState>();
+        state.discover(&worker)?;
+        state.snapshot()
+    })
+    .await
+    .map_err(|_| "Device discovery worker failed.".to_string())?
+}
+
+/// Applies a session-only preference, excluding all overlapping model and transcription work.
+#[tauri::command]
+pub async fn select_asr_device(
+    app: tauri::AppHandle,
+    selection: AsrSelection,
+) -> Result<EngineSnapshot, String> {
+    app.state::<EngineState>().reserve()?;
+    let worker = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        worker.state::<EngineState>().select(&worker, selection)
+    })
+    .await;
+    if result.is_err() {
+        app.state::<EngineState>().publish(
+            &app,
+            "unavailable",
+            None,
+            Some("Device loading worker failed. Retry your selection.".into()),
+            vec![],
+            None,
+            None,
+        );
+    }
+    app.state::<EngineState>().release();
+    result.map_err(|_| "Device loading worker failed.".to_string())??;
+    app.state::<EngineState>().snapshot()
+}
 /// Performs an explicitly requested download and initializes the verified resources.
 #[tauri::command]
 pub async fn download_models(app: tauri::AppHandle) -> Result<(), String> {
@@ -359,83 +487,4 @@ pub async fn download_models(app: tauri::AppHandle) -> Result<(), String> {
     result
 }
 #[cfg(test)]
-mod tests {
-    use super::*;
-    /// Uses a controlled monotonic clock to verify strict timeout and busy protection.
-    #[test]
-    fn idle_deadline_and_reservation() -> Result<(), String> {
-        let now = Instant::now();
-        let mut resident = Residency {
-            value: Some(42),
-            last_used: now,
-        };
-        assert!(!resident.unload(now + IDLE_TIMEOUT, false));
-        assert!(!resident.unload(now + IDLE_TIMEOUT + Duration::from_secs(1), true));
-        assert!(resident.unload(now + IDLE_TIMEOUT + Duration::from_secs(1), false));
-        assert!(resident.value.is_none());
-        let state = EngineState::default();
-        state.reserve()?;
-        assert!(state.reserve().is_err());
-        state.release();
-        state.reserve()?;
-        state.release();
-        Ok(())
-    }
-    /// A fake loader proves reuse, failure recovery, and exactly one reload after expiry.
-    #[test]
-    fn offline_loader_reuses_and_reloads_once() -> Result<(), String> {
-        let now = Instant::now();
-        let mut resident = Residency {
-            value: None,
-            last_used: now,
-        };
-        let mut loads = 0;
-        assert!(resident
-            .get_or_load(|| Err("Missing model".into()))
-            .is_err());
-        assert!(resident.value.is_none());
-        for _ in 0..3 {
-            let value = resident.get_or_load(|| {
-                loads += 1;
-                Ok(42)
-            })?;
-            assert_eq!(*value, 42);
-        }
-        assert_eq!(loads, 1);
-        assert!(resident.unload(now + Duration::from_secs(301), false));
-        resident.get_or_load(|| {
-            loads += 1;
-            Ok(43)
-        })?;
-        assert_eq!(loads, 2);
-        Ok(())
-    }
-    /// Simultaneous requests admit one owner for download or transcription.
-    #[test]
-    fn competing_model_operations_have_one_owner() -> anyhow::Result<()> {
-        let state = std::sync::Arc::new(EngineState::default());
-        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
-        let workers: Vec<_> = (0..8)
-            .map(|_| {
-                let state = state.clone();
-                let barrier = barrier.clone();
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    state.reserve().is_ok()
-                })
-            })
-            .collect();
-        let mut admitted = 0;
-        for worker in workers {
-            if worker
-                .join()
-                .map_err(|_| anyhow::anyhow!("Worker failed"))?
-            {
-                admitted += 1;
-            }
-        }
-        assert_eq!(admitted, 1);
-        state.release();
-        Ok(())
-    }
-}
+mod tests;

@@ -1,4 +1,10 @@
-//! Offline Parakeet GGUF inference with reusable Metal models and per-file sessions.
+//! Offline Parakeet GGUF inference with explicit devices and per-file sessions.
+
+#[cfg(all(
+    any(feature = "asr-cuda", feature = "asr-vulkan"),
+    not(any(target_os = "windows", target_os = "linux"))
+))]
+compile_error!("ASR CUDA/Vulkan features are supported only on Windows/Linux.");
 
 pub(crate) mod fetcher;
 mod providers;
@@ -8,7 +14,7 @@ pub(crate) mod state;
 mod transcriber;
 
 pub(crate) use providers::initialize as initialize_native;
-pub use providers::Provider;
+pub use providers::{discover_devices, AsrSelection, DeviceSnapshot, Provider};
 pub use resources::REVISION as MODEL_REVISION;
 pub(crate) use state::start as state_start;
 pub use state::{transcriber_state, EngineSnapshot, EngineState};
@@ -33,14 +39,16 @@ pub enum EngineError {
     #[error("The Silero ONNX runtime could not be initialized.")]
     OnnxRuntime(#[from] ort::Error),
     #[error(
-        "Metal ASR is unavailable. A compatible Apple Silicon Mac is required in this release."
+        "No compatible ASR GPU could be initialized. Check GPU drivers and build backends, select another GPU, or explicitly choose CPU."
     )]
     GpuUnavailable,
+    #[error("The selected ASR device is unavailable. Select an available device or Auto.")]
+    SelectionUnavailable,
     #[error(
         "The ASR model could not be initialized. Check available memory and repair the models."
     )]
     ModelLoad,
-    #[error("Local GPU transcription failed.")]
+    #[error("Local transcription failed. Check the selected device or retry.")]
     Inference,
     #[error("There is insufficient memory to run the local transcription model.")]
     OutOfMemory,
