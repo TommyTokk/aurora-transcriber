@@ -33,7 +33,9 @@ TXT/SRT/VTT export, and an explicitly saved local transcript archive. Use **Down
 models** to provision the supported ASR and VAD files. All transcription runs offline.
 ASR weights and the CPU VAD session remain resident until more than five idle minutes.
 Each file gets a scoped ASR session on the selected device, released on completion, cancellation, or failure.
-The reference icon supplies colors only; the bundled icon is unchanged.
+The bundled desktop icon uses the supplied artwork, preserved in
+`src-tauri/icons/source.svg`. Regenerate the icons with Tauri's `icon` command
+using `--fit cover` to preserve proportions while cropping to a square.
 
 `npm run dev` provides a browser layout preview; native import is available
 through `npm run tauri -- dev`.
