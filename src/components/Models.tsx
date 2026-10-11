@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AsrSelection, ModelSnapshot } from "../lib/transcription";
+import {
+  modelLabel,
+  type AsrSelection,
+  type ModelSnapshot,
+} from "../lib/transcription";
 import { AsrDeviceControl } from "./AsrDeviceControl";
 
 interface StorageSnapshot {
@@ -125,6 +129,11 @@ export function Models({
   return (
     <section className="transcription-panel models-panel" aria-label="Models">
       <h2>Models</h2>
+      <ul aria-label="Required models" className="muted">
+        {model.models.map((item) => (
+          <li key={item.id}>{modelLabel(item)}</li>
+        ))}
+      </ul>
       <AsrDeviceControl
         model={model}
         disabled={busy}

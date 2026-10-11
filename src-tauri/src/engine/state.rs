@@ -17,6 +17,7 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 #[serde(rename_all = "camelCase")]
 pub struct EngineSnapshot {
     pub revision: u64,
+    pub models: Vec<super::ModelDescriptor>,
     pub selection: AsrSelection,
     pub devices: Vec<DeviceSnapshot>,
     pub device: Option<DeviceSnapshot>,
@@ -87,6 +88,7 @@ impl Default for EngineState {
             }),
             snapshot: Mutex::new(EngineSnapshot {
                 revision: 0,
+                models: super::manifest::descriptors(),
                 selection: AsrSelection::Auto {},
                 devices: vec![],
                 device: None,

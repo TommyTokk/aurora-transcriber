@@ -145,3 +145,106 @@ fn active_operations_reject_reset() -> anyhow::Result<()> {
     assert!(!profile.path().join("model-storage.json").exists());
     Ok(())
 }
+
+/// Explicitly provisions a clean temporary profile and loads both runtimes without audio inference.
+///
+/// Requires network access, a real Metal device and the trusted ORT_DYLIB_PATH.
+/// All initialization, native teardown and model hashing run on a blocking worker.
+#[test]
+#[ignore = "explicit full GGUF/Silero download, Metal loading and offline custom-folder reload"]
+fn milestone10_clean_install_and_custom_reload() -> anyhow::Result<()> {
+    tauri::async_runtime::block_on(tauri::async_runtime::spawn_blocking(
+        || -> anyhow::Result<()> {
+            let profile = tempfile::tempdir()?;
+            let custom = tempfile::tempdir()?;
+            let app = tauri::test::mock_app();
+            app.manage(ModelStorage::new(profile.path()));
+            app.manage(EngineState::default());
+            let state = app.state::<EngineState>();
+            state.reserve().map_err(anyhow::Error::msg)?;
+            let result = (|| -> anyhow::Result<()> {
+                let base = app
+                    .state::<ModelStorage>()
+                    .prepare()
+                    .map_err(anyhow::Error::msg)?;
+                assert_eq!(fetcher::missing(&base).len(), 2);
+                fetcher::download(app.handle()).map_err(anyhow::Error::msg)?;
+                fetcher::validate(&base)?;
+                assert!(fetcher::missing(&base).is_empty());
+                state
+                    .with_sessions(app.handle(), |sessions| {
+                        assert_eq!(sessions.asr.provider(), crate::engine::Provider::Metal);
+                        Ok(())
+                    })
+                    .map_err(anyhow::Error::msg)?;
+                assert_eq!(state.snapshot().map_err(anyhow::Error::msg)?.phase, "ready");
+                state.release();
+                // Advance the monotonic deadline without waiting five minutes or running ASR.
+                state.unload_idle_at(
+                    app.handle(),
+                    std::time::Instant::now() + std::time::Duration::from_secs(301),
+                );
+                assert_eq!(
+                    state.snapshot().map_err(anyhow::Error::msg)?.phase,
+                    "unloaded"
+                );
+                state.reserve().map_err(anyhow::Error::msg)?;
+                state
+                    .with_sessions(app.handle(), |_| Ok(()))
+                    .map_err(anyhow::Error::msg)?;
+                assert_eq!(state.snapshot().map_err(anyhow::Error::msg)?.phase, "ready");
+                // Hard links preserve verified bytes while exercising a distinct native directory.
+                for model in crate::engine::manifest::MODELS {
+                    let target = model.destination(custom.path());
+                    std::fs::create_dir_all(
+                        target
+                            .parent()
+                            .ok_or_else(|| anyhow::anyhow!("Missing parent"))?,
+                    )?;
+                    std::fs::hard_link(model.destination(&base), target)?;
+                }
+                let legacy = custom.path().join("parakeet/encoder-model.onnx");
+                std::fs::write(&legacy, b"preserved legacy model")?;
+                app.state::<ModelStorage>()
+                    .activate(Some(custom.path().into()))
+                    .map_err(anyhow::Error::msg)?;
+                state
+                    .reload_destination(app.handle())
+                    .map_err(anyhow::Error::msg)?;
+                assert_eq!(state.snapshot().map_err(anyhow::Error::msg)?.phase, "ready");
+                assert_eq!(std::fs::read(&legacy)?, b"preserved legacy model");
+                let restarted = tauri::test::mock_app();
+                restarted.manage(ModelStorage::new(profile.path()));
+                restarted.manage(EngineState::default());
+                assert_eq!(
+                    restarted
+                        .state::<ModelStorage>()
+                        .path()
+                        .map_err(anyhow::Error::msg)?,
+                    custom.path()
+                );
+                state.shutdown();
+                let next = restarted.state::<EngineState>();
+                next.reserve().map_err(anyhow::Error::msg)?;
+                let reload = next.with_sessions(restarted.handle(), |sessions| {
+                    assert_eq!(sessions.asr.provider(), crate::engine::Provider::Metal);
+                    Ok(())
+                });
+                next.release();
+                next.shutdown();
+                reload.map_err(anyhow::Error::msg)?;
+                assert_eq!(next.snapshot().map_err(anyhow::Error::msg)?.phase, "ready");
+                fetcher::validate(&base)?;
+                fetcher::validate(custom.path())?;
+                Ok(())
+            })();
+            // Mock applications do not emit Exit; always release native assets before temp folders.
+            state.release();
+            state.shutdown();
+            result?;
+            println!("Milestone 10: full clean download, Metal ASR/CPU VAD loading, idle reload and persisted custom-folder reload passed; no audio inference.");
+            Ok(())
+        },
+    ))??;
+    Ok(())
+}

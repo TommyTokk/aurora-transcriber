@@ -1,5 +1,5 @@
 //! Explicit Hugging Face provisioning with verified, atomic local promotion.
-use super::{resources, EngineError};
+use super::{manifest, resources, EngineError};
 use crate::model_storage::ModelStorage;
 use hf_hub::{
     api::{sync::ApiBuilder, Progress},
@@ -11,30 +11,29 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 
-pub(crate) const SILERO_HASH: &str =
-    "2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f";
-/// Resolves model files solely inside the managed directory.
+/// Trusted Silero content identity retained for existing offline callers.
+pub(crate) const SILERO_HASH: &str = manifest::SILERO.sha256;
+/// Resolves typed ASR and VAD destinations solely inside the managed directory.
 pub(crate) fn paths(base: &Path) -> (PathBuf, PathBuf) {
-    (base.join("parakeet"), base.join("silero_vad.onnx"))
+    (
+        base.join(manifest::PARAKEET.directory),
+        manifest::SILERO.destination(base),
+    )
 }
-/// Lists absent resource files with safe filenames only; loading also verifies checksums.
+/// Lists absent artifacts with safe filenames only; loading verifies their content.
 pub(crate) fn missing(base: &Path) -> Vec<String> {
-    let (asr, vad) = paths(base);
-    let mut missing: Vec<_> = resources::FILES
+    manifest::MODELS
         .iter()
-        .filter(|(name, _)| !asr.join(name).is_file())
-        .map(|(name, _)| name.to_string())
-        .collect();
-    if !vad.is_file() {
-        missing.push("silero_vad.onnx".into());
-    }
-    missing
+        .filter(|model| !model.destination(base).is_file())
+        .map(|model| model.filename.to_string())
+        .collect()
 }
-/// Verifies local resources without invoking Hugging Face or any network API.
+/// Verifies both formats locally without invoking any network API.
 pub(crate) fn validate(base: &Path) -> Result<(), EngineError> {
-    let (asr, vad) = paths(base);
-    resources::validate(&asr)?;
-    resources::verify_file(&vad, SILERO_HASH)
+    for model in manifest::MODELS {
+        resources::verify_file(&model.destination(base), model.sha256)?;
+    }
+    Ok(())
 }
 /// Copies a verified downloaded file to its final name through an atomic promotion.
 fn promote(source: &Path, destination: &Path, hash: &str) -> Result<(), String> {
@@ -121,7 +120,6 @@ impl<R: tauri::Runtime> Progress for DownloadProgress<R> {
 /// Downloads only missing or corrupt files after the explicit Download models action.
 pub(crate) fn download<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
     let base = app.state::<ModelStorage>().prepare()?;
-    let (asr, vad) = paths(&base);
     // This builder fixes the endpoint and disables environment token lookup and console output.
     let api = ApiBuilder::new()
         .with_cache_dir(base.join(".download-cache"))
@@ -130,42 +128,30 @@ pub(crate) fn download<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(
         .with_retries(2)
         .build()
         .map_err(|_| "Unable to initialize model download.")?;
-    let parakeet = api.repo(Repo::with_revision(
-        resources::REPOSITORY.into(),
-        RepoType::Model,
-        resources::REVISION.into(),
-    ));
-    let silero = api.model("Derur/silero-models".into());
-    let total = resources::FILES.len() + 1;
-    for (index, (filename, hash)) in resources::FILES
-        .iter()
-        .copied()
-        .chain(std::iter::once(("silero_vad.onnx", SILERO_HASH)))
-        .enumerate()
-    {
-        let target = if filename == "silero_vad.onnx" {
-            vad.clone()
-        } else {
-            asr.join(filename)
-        };
-        ensure_file(&target, hash, || {
+    let total = manifest::MODELS.len();
+    for (index, model) in manifest::MODELS.iter().enumerate() {
+        // The artifact owns its source and relative destination; roles never route by filename.
+        let target = model.destination(&base);
+        ensure_file(&target, model.sha256, || {
             let progress = DownloadProgress {
                 app: app.clone(),
-                file: filename.into(),
+                file: model.filename.into(),
                 index,
                 total,
                 received: 0,
                 size: 0,
                 last: Instant::now(),
             };
-            let source = if filename == "silero_vad.onnx" {
-                silero.download_with_progress("vad/silero_vad.onnx", progress)
-            } else {
-                parakeet.download_with_progress(filename, progress)
-            }
-            .map_err(|_| {
-                "Model download failed. Check your connection and disk space, then retry."
-            })?;
+            let repository = api.repo(Repo::with_revision(
+                model.repository.into(),
+                RepoType::Model,
+                model.revision.into(),
+            ));
+            let source = repository
+                .download_with_progress(model.remote_file, progress)
+                .map_err(|_| {
+                    "Model download failed. Check your connection and disk space, then retry."
+                })?;
             Ok(source)
         })?;
     }
@@ -241,15 +227,71 @@ mod tests {
         let source = super::super::runtime::absolute_env("AURORA_ASR_MODEL_DIR")?;
         let (asr, _) = paths(&base);
         std::fs::create_dir_all(&asr)?;
-        for (name, _) in resources::FILES {
-            std::fs::hard_link(source.join(name), asr.join(name))?;
-        }
+        std::fs::hard_link(
+            source.join(resources::MODEL_FILE),
+            asr.join(resources::MODEL_FILE),
+        )?;
         let app = tauri::test::mock_app();
         app.manage(storage);
         app.manage(super::super::EngineState::default());
         download(app.handle()).map_err(anyhow::Error::msg)?;
         validate(&base)?;
         assert!(missing(&base).is_empty());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod manifest_tests {
+    use super::*;
+
+    /// Reports each absent role independently and never treats presence as verified readiness.
+    #[test]
+    fn mixed_resource_presence_and_corruption() -> anyhow::Result<()> {
+        for present in 0_u8..4 {
+            let directory = tempfile::tempdir()?;
+            for (index, model) in manifest::MODELS.iter().enumerate() {
+                if present & (1 << index) != 0 {
+                    let target = model.destination(directory.path());
+                    std::fs::create_dir_all(
+                        target
+                            .parent()
+                            .ok_or_else(|| anyhow::anyhow!("Missing parent"))?,
+                    )?;
+                    std::fs::write(target, b"corrupt")?;
+                }
+            }
+            let expected: Vec<_> = manifest::MODELS
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| present & (1 << index) == 0)
+                .map(|(_, model)| model.filename.to_string())
+                .collect();
+            assert_eq!(missing(directory.path()), expected);
+            assert!(validate(directory.path()).is_err());
+        }
+        Ok(())
+    }
+
+    /// Failed repairs leave existing bytes intact and a subsequent valid transfer replaces them.
+    #[test]
+    fn retry_repairs_only_the_target() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let target = directory.path().join("weight");
+        let unrelated = directory.path().join("user-file");
+        let source = directory.path().join("transfer");
+        let hash = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        std::fs::write(&target, b"corrupt existing model")?;
+        std::fs::write(&unrelated, b"keep")?;
+        assert!(ensure_file(&target, hash, || Err("Transfer interrupted".into())).is_err());
+        assert_eq!(std::fs::read(&target)?, b"corrupt existing model");
+        std::fs::write(&source, b"partial")?;
+        assert!(ensure_file(&target, hash, || Ok(source.clone())).is_err());
+        assert_eq!(std::fs::read(&target)?, b"corrupt existing model");
+        std::fs::write(&source, b"abc")?;
+        ensure_file(&target, hash, || Ok(source)).map_err(anyhow::Error::msg)?;
+        assert_eq!(std::fs::read(&target)?, b"abc");
+        assert_eq!(std::fs::read(&unrelated)?, b"keep");
         Ok(())
     }
 }

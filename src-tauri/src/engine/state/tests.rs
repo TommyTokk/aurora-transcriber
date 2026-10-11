@@ -196,6 +196,42 @@ fn unload_snapshot_preserves_selection_and_orders_updates() -> Result<(), String
     assert!(unloaded.revision > ready.revision);
     assert_eq!(unloaded.selection, ready.selection);
     assert_eq!(unloaded.devices, ready.devices);
+    assert_eq!(unloaded.models, ready.models);
+    assert_eq!(unloaded.models, super::super::manifest::descriptors());
     assert!(unloaded.device.is_none() && unloaded.provider.is_none());
+    Ok(())
+}
+
+/// The full IPC snapshot includes only display metadata and retains the manifest before loading.
+#[test]
+fn snapshot_serializes_public_model_identities() -> anyhow::Result<()> {
+    let snapshot = EngineState::default()
+        .snapshot()
+        .map_err(anyhow::Error::msg)?;
+    let value = serde_json::to_value(snapshot)?;
+    assert_eq!(
+        value["models"],
+        serde_json::to_value(super::super::manifest::descriptors())?
+    );
+    for descriptor in value["models"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("Expected models array"))?
+    {
+        let fields = descriptor
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("Expected descriptor"))?;
+        assert_eq!(fields.len(), 6);
+        for private in [
+            "repository",
+            "revision",
+            "remoteFile",
+            "directory",
+            "filename",
+            "sha256",
+            "path",
+        ] {
+            assert!(!fields.contains_key(private));
+        }
+    }
     Ok(())
 }

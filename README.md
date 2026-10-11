@@ -424,6 +424,64 @@ job reloaded them offline, and native cancellation discarded its partial result.
 this does not establish how much inference was delegated to the Apple Neural Engine.
 Unsigned `.app` and `.dmg` packaging succeeded with system packaging permissions.
 
+## Milestone 10 model management
+
+The typed installation manifest distinguishes **ASR / GGUF** (Parakeet TDT
+0.6B v3, Q8_0) from **VAD / ONNX** (Silero v5.1, CPU-only). Download,
+missing-file reporting and local integrity verification use the same artifact
+metadata. ASR uses the existing immutable Handy revision and SHA-256; Silero
+retains its existing `Derur/silero-models` source on `main`, with its trusted
+SHA-256 pinning the accepted content. Model folders keep the existing layout:
+`parakeet/parakeet-tdt-0.6b-v3-Q8_0.gguf` and `silero_vad.onnx`.
+
+`transcriber_state` and `transcriber-state` include a `models` array with
+`id`, `name`, `version`, `purpose` (`ASR` or `VAD`), `format` (`GGUF` or `ONNX`),
+and nullable `quantization`. These descriptors remain available during loading,
+downloads and idle release; they reveal no local paths, download sources or
+checksums. The Models panel displays both identities alongside existing controls.
+Presence checks are cheap and do not claim integrity; `ready` requires verified
+files and successful initialization of both runtimes.
+
+Download models remains explicit. Verified files are reused, failed or corrupt
+transfers can be retried, and only verified staged files are atomically promoted.
+Legacy ASR ONNX files and all other existing user files remain untouched. There
+is no configuration migration or VAD algorithm change; milestone 9 stays skipped.
+
+The opt-in test downloads both complete artifacts into an empty temporary
+profile, loads Metal ASR and CPU VAD **without audio inference**, advances the
+idle deadline, reloads locally, switches to a second temporary folder with
+verified hard-linked artifacts, and reconstructs application state to check the
+persisted custom choice. It requires network access and a working Metal GPU:
+
+```sh
+ORT_DYLIB_PATH="$PWD/src-tauri/resources/onnxruntime/libonnxruntime.1.20.1.dylib" \
+  cargo test --lib model_storage::tests::milestone10_clean_install_and_custom_reload \
+  -- --ignored --exact --nocapture
+```
+
+## Milestone 10 verification (2026-10-11)
+
+On the available Apple Silicon Mac, 67 ordinary Rust tests and 5 frontend tests
+passed, along with Clippy (`--workspace --all-targets -- -D warnings`), Rust and
+Prettier formatting checks, the production frontend build, and server rendering
+of both model identities and the existing Models controls. Tests cover mixed
+resource presence, checksum failures, atomic promotion, retry, preservation of
+legacy/unrelated files, snapshot serialization and metadata retention across
+ordered updates.
+
+The opt-in clean-install test passed with a complete Hugging Face download into
+an empty temporary profile, verified artifact hashes, actual Metal model loading,
+CPU Silero initialization, idle release and offline reload. It also loaded both
+models from a second custom directory and recreated native storage/engine state
+to verify persisted selection and offline initialization. Temporary profiles and
+models were released automatically. No audio was decoded or transcribed.
+
+Hugging Face metadata at the pinned Handy revision confirmed the configured
+GGUF SHA-256 and exact size (739,508,576 bytes). Native-window interaction and
+new package generation were not performed for this milestone; the backend test
+uses the same provisioning code as the unchanged UI action. Windows/Linux native
+execution remains unverified; packaging and ONNX ASR cleanup remain later work.
+
 ## Milestone 7 verification (2026-10-11)
 
 Verified on the available Apple Silicon Mac running macOS 26.6.2: 56 ordinary

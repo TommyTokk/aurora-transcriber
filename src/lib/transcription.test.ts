@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  modelLabel,
   EMPTY_JOB,
   EMPTY_MODEL,
   isJobActive,
@@ -68,4 +69,30 @@ test("ASR select values preserve explicit intent", () => {
     mode: "device",
     id: "unknown",
   });
+});
+
+/** Shows mixed model identities without exposing source repositories or native paths. */
+test("model labels distinguish GGUF ASR from CPU ONNX VAD", () => {
+  assert.equal(
+    modelLabel({
+      id: "asr",
+      name: "Parakeet TDT 0.6B",
+      version: "v3",
+      purpose: "ASR",
+      format: "GGUF",
+      quantization: "Q8_0",
+    }),
+    "Parakeet TDT 0.6B v3 — ASR · GGUF · Q8_0",
+  );
+  assert.equal(
+    modelLabel({
+      id: "vad",
+      name: "Silero",
+      version: "v5.1",
+      purpose: "VAD",
+      format: "ONNX",
+      quantization: null,
+    }),
+    "Silero v5.1 — VAD · ONNX · CPU",
+  );
 });

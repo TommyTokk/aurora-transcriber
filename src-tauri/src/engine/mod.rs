@@ -7,12 +7,14 @@
 compile_error!("ASR CUDA/Vulkan features are supported only on Windows/Linux.");
 
 pub(crate) mod fetcher;
+pub(crate) mod manifest;
 mod providers;
 pub(crate) mod resources;
 pub(crate) mod runtime;
 pub(crate) mod state;
 mod transcriber;
 
+pub use manifest::{ModelDescriptor, ModelFormat, ModelPurpose};
 pub(crate) use providers::initialize as initialize_native;
 pub use providers::{discover_devices, AsrSelection, DeviceSnapshot, Provider};
 pub use resources::REVISION as MODEL_REVISION;
