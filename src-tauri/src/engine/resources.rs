@@ -1,66 +1,26 @@
 //! Immutable export identity and streaming resource integrity checks.
 use super::EngineError;
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{fs::File, io::Read, path::Path};
 
-/// Hugging Face revision of istupakov/parakeet-tdt-0.6b-v3-onnx.
-pub const REVISION: &str = "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce";
-/// Required FP32 files and their SHA-256 hashes at the pinned revision.
-pub(crate) const FILES: &[(&str, &str)] = &[
-    (
-        "encoder-model.onnx",
-        "98a74b21b4cc0017c1e7030319a4a96f4a9506e50f0708f3a516d02a77c96bb1",
-    ),
-    (
-        "encoder-model.onnx.data",
-        "9a22d372c51455c34f13405da2520baefb7125bd16981397561423ed32d24f36",
-    ),
-    (
-        "decoder_joint-model.onnx",
-        "e978ddf6688527182c10fde2eb4b83068421648985ef23f7a86be732be8706c1",
-    ),
-    (
-        "nemo128.onnx",
-        "a9fde1486ebfcc08f328d75ad4610c67835fea58c73ba57e3209a6f6cf019e9f",
-    ),
-    (
-        "config.json",
-        "666903c76b9798caf2c210afd4f6cd60b08a8dbf9800ec8d7a3bc0d2148ac466",
-    ),
-    (
-        "vocab.txt",
-        "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d",
-    ),
-];
+/// Official Handy conversion revision, confirmed through Hugging Face model metadata.
+pub const REVISION: &str = "90f082450fcbacdb54e5900c44ef697c9ea59622";
+/// Repository containing transcribe.cpp-compatible multilingual Parakeet weights.
+pub(crate) const REPOSITORY: &str = "handy-computer/parakeet-tdt-0.6b-v3-gguf";
+/// The sole ASR resource required by this milestone.
+pub(crate) const MODEL_FILE: &str = "parakeet-tdt-0.6b-v3-Q8_0.gguf";
+/// SHA-256 of the complete GGUF, distinct from its Xet storage hash.
+pub(crate) const MODEL_HASH: &str =
+    "5859f77944efcd8eafa23a6350731960b2b55b2203df51f319665c807d802cc7";
+/// Immutable ASR download manifest; legacy ONNX files are neither required nor deleted.
+pub(crate) const FILES: &[(&str, &str)] = &[(MODEL_FILE, MODEL_HASH)];
 
-/// Export metadata needed to reject incompatible preprocessing and decoding.
-#[derive(Deserialize)]
-struct Config {
-    model_type: String,
-    features_size: usize,
-    subsampling_factor: usize,
-}
-
-/// Streams weights through a bounded buffer and validates pinned model metadata.
+/// Verifies the fixed local GGUF before native parsing or weight allocation.
 pub(crate) fn validate(dir: &Path) -> Result<(), EngineError> {
     if !dir.is_absolute() || !dir.is_dir() {
         return Err(EngineError::Configuration);
     }
-    for &(name, expected) in FILES {
-        verify_file(&dir.join(name), expected)?;
-    }
-    let config: Config = serde_json::from_slice(
-        &std::fs::read(dir.join("config.json")).map_err(|_| EngineError::Resources)?,
-    )
-    .map_err(|_| EngineError::Resources)?;
-    if config.model_type != "nemo-conformer-tdt"
-        || config.features_size != 128
-        || config.subsampling_factor != 8
-    {
-        return Err(EngineError::ModelContract);
-    }
-    Ok(())
+    verify_file(&dir.join(MODEL_FILE), MODEL_HASH)
 }
 
 /// Rejects missing, non-file, truncated, or modified resources without logging paths.
@@ -91,7 +51,7 @@ pub(crate) fn verify_file(path: &Path, expected: &str) -> Result<(), EngineError
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// Detects resource modification independently of ONNX model loading.
+    /// Detects resource modification before native model loading.
     #[test]
     fn integrity_and_missing_resources() -> anyhow::Result<()> {
         let file = tempfile::NamedTempFile::new()?;

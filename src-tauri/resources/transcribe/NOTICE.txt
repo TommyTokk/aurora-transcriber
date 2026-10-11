@@ -1,0 +1,8 @@
+AURORA uses transcribe.cpp 0.2.4 and vendored GGML through the official transcribe-cpp Rust bindings.
+Source: https://github.com/handy-computer/transcribe.cpp
+Native libraries and Metal shader sources are statically embedded.
+Both native projects are distributed under the accompanying MIT licenses.
+Parakeet TDT 0.6B v3 weights: NVIDIA, CC-BY-4.0; GGUF conversion by Handy.
+Source: https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v3-gguf
+Pinned conversion revision: 90f082450fcbacdb54e5900c44ef697c9ea59622.
+Models are downloaded separately through the explicit application action.

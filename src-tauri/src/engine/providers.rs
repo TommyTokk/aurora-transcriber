@@ -1,121 +1,101 @@
-//! Platform-specific session construction with explicit, fallible fallback.
-
+//! Strict Metal policy; ASR must never fall back to CPU.
 use super::EngineError;
-use ort::{
-    execution_providers::{CPUExecutionProvider, ExecutionProviderDispatch},
-    session::Session,
-};
 use serde::Serialize;
-use std::path::Path;
+use std::sync::Once;
+use transcribe_cpp::{Backend, DeviceType, Model, ModelOptions};
 
-/// Requested ASR provider; individual unsupported operators can still run on CPU.
+static NATIVE_STARTUP: Once = Once::new();
+
+/// Actual initialized ASR backend, serialized through the existing provider field.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub enum Provider {
-    Cpu,
-    #[cfg(target_os = "macos")]
-    CoreMl,
-    #[cfg(target_os = "windows")]
-    DirectMl,
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
-    Cuda,
+    Metal,
 }
 
-impl Provider {
-    /// Creates a provider dispatch that reports registration failures to callers.
-    fn dispatch(self) -> ExecutionProviderDispatch {
-        match self {
-            Self::Cpu => CPUExecutionProvider::default().build(),
-            #[cfg(target_os = "macos")]
-            Self::CoreMl => ort::execution_providers::CoreMLExecutionProvider::default().build(),
-            #[cfg(target_os = "windows")]
-            Self::DirectMl => {
-                ort::execution_providers::DirectMLExecutionProvider::default().build()
-            }
-            #[cfg(any(target_os = "windows", target_os = "linux"))]
-            Self::Cuda => ort::execution_providers::CUDAExecutionProvider::default().build(),
-        }
-        .error_on_failure()
+/// Silences native diagnostics once before registry access or model loading.
+pub(crate) fn initialize() {
+    NATIVE_STARTUP.call_once(transcribe_cpp::disable_logging);
+}
+
+/// Requires Metal on Apple Silicon before loading any weights.
+pub(super) fn options() -> Result<ModelOptions, EngineError> {
+    initialize();
+    // Upstream diagnostic dumps bypass its logging callback and write sensitive tensors.
+    if std::env::var_os("TRANSCRIBE_DUMP_DIR").is_some_and(|value| !value.is_empty()) {
+        return Err(EngineError::Configuration);
     }
-}
-
-/// Lists compiled candidates in the user-approved platform priority order.
-fn candidates() -> &'static [Provider] {
-    &[
-        #[cfg(target_os = "macos")]
-        Provider::CoreMl,
-        #[cfg(target_os = "windows")]
-        Provider::DirectMl,
-        #[cfg(any(target_os = "windows", target_os = "linux"))]
-        Provider::Cuda,
-        Provider::Cpu,
-    ]
-}
-
-/// Builds a session without reusable transient CPU tensor arenas or patterns.
-pub(super) fn session(path: &Path, provider: Provider) -> Result<Session, EngineError> {
-    let session = Session::builder()?
-        .with_execution_providers([provider.dispatch(), CPUExecutionProvider::default().build()])?
-        .with_parallel_execution(false)?
-        .with_memory_pattern(false)?
-        .with_intra_threads(std::thread::available_parallelism().map_or(1, usize::from))?
-        .with_inter_threads(1)?
-        .commit_from_file(path)?;
-    Ok(session)
-}
-
-/// Attempts complete encoder/decoder pairs, dropping partial pairs before retry.
-pub(super) fn load_pair(
-    dir: &Path,
-    cpu_only: bool,
-) -> Result<(Session, Session, Provider), EngineError> {
-    let candidates = if cpu_only {
-        &[Provider::Cpu][..]
-    } else {
-        candidates()
-    };
-    try_candidates(candidates, |provider| {
-        let encoder = session(&dir.join("encoder-model.onnx"), provider)?;
-        let decoder = session(&dir.join("decoder_joint-model.onnx"), provider)?;
-        Ok((encoder, decoder, provider))
+    if !cfg!(all(target_os = "macos", target_arch = "aarch64"))
+        || !transcribe_cpp::backend_available(Backend::Metal)
+    {
+        return Err(EngineError::GpuUnavailable);
+    }
+    Ok(ModelOptions {
+        backend: Backend::Metal,
+        device: None,
     })
 }
 
-/// Tries providers sequentially without printing runtime errors or resource paths.
-fn try_candidates<T>(
-    candidates: &[Provider],
-    mut attempt: impl FnMut(Provider) -> Result<T, EngineError>,
-) -> Result<T, EngineError> {
-    for &provider in candidates {
-        match attempt(provider) {
-            Ok(value) => return Ok(value),
-            Err(error) if provider == Provider::Cpu => return Err(error),
-            Err(_) => eprintln!(
-                "AURORA: {provider:?} session initialization failed; trying the next provider."
-            ),
-        }
+/// Verifies the resolved device instead of inferring GPU use from Cargo features.
+pub(super) fn verify(model: &Model) -> Result<Provider, EngineError> {
+    let device = model.device().map_err(|_| EngineError::GpuUnavailable)?;
+    verify_backend(
+        &model.backend(),
+        &device.name,
+        &device.kind,
+        device.device_type,
+    )
+}
+
+/// Rejects CPU fallback, unresolved devices, and other accelerators.
+fn verify_backend(
+    backend: &str,
+    device_name: &str,
+    kind: &str,
+    class: DeviceType,
+) -> Result<Provider, EngineError> {
+    // Parakeet 0.2.4 reports the ggml name (MTL0), rather than the documented kind.
+    // Match the resolved device identity as well as its Metal kind and GPU class.
+    if (backend == "metal" || (!device_name.is_empty() && backend == device_name))
+        && kind == "metal"
+        && matches!(class, DeviceType::Gpu | DeviceType::Igpu)
+    {
+        Ok(Provider::Metal)
+    } else {
+        Err(EngineError::GpuUnavailable)
     }
-    Err(EngineError::Unavailable)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// Ensures every platform ends with CPU and retries failures in order.
+    /// Accepts Metal GPUs and rejects hidden CPU or unresolved devices.
     #[test]
-    fn priority_and_fallback() -> anyhow::Result<()> {
-        assert_eq!(candidates().last(), Some(&Provider::Cpu));
-        let mut attempts = Vec::new();
-        let result = try_candidates(candidates(), |provider| {
-            attempts.push(provider);
-            if provider == Provider::Cpu {
-                Ok(provider)
-            } else {
-                Err(EngineError::Unavailable)
-            }
-        })?;
-        assert_eq!(result, Provider::Cpu);
-        assert_eq!(attempts, candidates());
-        assert!(try_candidates::<()>(candidates(), |_| Err(EngineError::Unavailable)).is_err());
+    fn actual_backend_must_be_metal() -> anyhow::Result<()> {
+        assert_eq!(
+            verify_backend("metal", "MTL0", "metal", DeviceType::Gpu)?,
+            Provider::Metal
+        );
+        assert_eq!(
+            verify_backend("metal", "MTL0", "metal", DeviceType::Igpu)?,
+            Provider::Metal
+        );
+        assert_eq!(
+            verify_backend("MTL0", "MTL0", "metal", DeviceType::Gpu)?,
+            Provider::Metal
+        );
+        for (backend, kind, class) in [
+            ("cpu", "cpu", DeviceType::Cpu),
+            ("", "metal", DeviceType::Gpu),
+            ("MTL1", "metal", DeviceType::Gpu),
+            ("metal", "cpu", DeviceType::Cpu),
+            ("vulkan", "vulkan", DeviceType::Gpu),
+            ("metal", "metal", DeviceType::Unknown),
+        ] {
+            assert!(matches!(
+                verify_backend(backend, "MTL0", kind, class),
+                Err(EngineError::GpuUnavailable)
+            ));
+        }
         Ok(())
     }
 }

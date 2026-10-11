@@ -1,5 +1,39 @@
 use super::*;
 
+/// Switching to a missing installation publishes GGUF requirements without deleting old files.
+#[test]
+fn destination_switch_reports_new_requirements() -> anyhow::Result<()> {
+    let profile = tempfile::tempdir()?;
+    let custom = tempfile::tempdir()?;
+    std::fs::write(custom.path().join("legacy.onnx"), b"keep")?;
+    let app = tauri::test::mock_app();
+    app.manage(ModelStorage::new(profile.path()));
+    app.manage(EngineState::default());
+    app.state::<EngineState>()
+        .reserve()
+        .map_err(anyhow::Error::msg)?;
+    switch(app.handle(), Some(custom.path().into())).map_err(anyhow::Error::msg)?;
+    app.state::<EngineState>().release();
+    let snapshot = app
+        .state::<EngineState>()
+        .snapshot()
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(snapshot.phase, "missing");
+    assert_eq!(
+        snapshot.missing,
+        vec![crate::engine::resources::MODEL_FILE, "silero_vad.onnx"]
+    );
+    assert_eq!(std::fs::read(custom.path().join("legacy.onnx"))?, b"keep");
+    assert_eq!(
+        app.state::<ModelStorage>()
+            .path()
+            .map_err(anyhow::Error::msg)?,
+        custom.path()
+    );
+    app.state::<EngineState>().shutdown();
+    Ok(())
+}
+
 /// Verifies first launch, restart persistence, cancellation, reset, and file preservation.
 #[test]
 fn destination_lifecycle_preserves_files() -> anyhow::Result<()> {

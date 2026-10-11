@@ -1,8 +1,4 @@
 use super::*;
-use crate::{
-    export::{format_segments, ExportFormat},
-    storage::Storage,
-};
 use std::path::Path;
 
 /// Creates an isolated mock runtime without opening windows or contacting services.
@@ -54,115 +50,68 @@ fn empty_completion_has_no_partial_results() -> Result<(), String> {
     assert!(state.snapshot()?.segments.is_empty());
     Ok(())
 }
-/// Links local test resources into a temporary managed directory without downloading.
-fn provision(models: &crate::model_storage::ModelStorage) -> anyhow::Result<()> {
-    let source = crate::engine::runtime::absolute_env("AURORA_ASR_MODEL_DIR")?;
-    let vad = crate::engine::runtime::absolute_env("AURORA_SILERO_MODEL")?;
-    let base = models.prepare().map_err(anyhow::Error::msg)?;
-    let target = base.join("parakeet");
-    std::fs::create_dir_all(&target)?;
-    for (name, _) in crate::engine::resources::FILES {
-        std::fs::hard_link(source.join(name), target.join(name))?;
-    }
-    std::fs::hard_link(vad, base.join("silero_vad.onnx"))?;
-    Ok(())
-}
-/// Exercises user-authorized audio, real VAD/ASR, explicit edited save and all exports offline.
+/// Downloads explicitly into the chosen profile, then tests only a ten-second Metal sample.
+///
+/// AURORA_M7_PROFILE selects an existing/native model configuration. This ignored
+/// test never saves transcripts or audio and never performs CPU ASR.
 #[test]
-#[ignore = "requires local Parakeet, Silero, ORT 1.20.1 and authorized audio_samples/audio.m4a"]
-fn local_audio_sample_pipeline_and_archive() -> anyhow::Result<()> {
-    sample_pipeline(false)
-}
-/// Provisions an empty isolated profile explicitly, then verifies real audio and offline reload.
-#[test]
-#[ignore = "explicit multi-GB Hugging Face download and authorized audio_samples/audio.m4a"]
-fn download_sample_and_offline_reload() -> anyhow::Result<()> {
-    sample_pipeline(true)
-}
-/// Shares the real sample checks between offline resources and explicit network provisioning.
-fn sample_pipeline(download: bool) -> anyhow::Result<()> {
-    let directory = tempfile::tempdir()?;
-    let storage = Storage::new(directory.path())?;
-    let models = crate::model_storage::ModelStorage::new(directory.path());
-    if !download {
-        provision(&models)?;
-    }
+#[ignore = "explicit GGUF download and authorized first ten seconds of audio_samples/audio.m4a"]
+fn milestone7_metal_pipeline() -> anyhow::Result<()> {
+    let profile = crate::engine::runtime::absolute_env("AURORA_M7_PROFILE")?;
+    let models = crate::model_storage::ModelStorage::new(&profile);
     let app = app();
-    app.manage(storage);
     app.manage(models);
     app.manage(EngineState::default());
     app.manage(TranscriptionState::default());
-    if download {
-        crate::engine::fetcher::download(app.handle()).map_err(anyhow::Error::msg)?;
-    }
-    let audio = Path::new(env!("CARGO_MANIFEST_DIR")).join("../audio_samples/audio.m4a");
-    let job = app.state::<TranscriptionState>();
     let engine = app.state::<EngineState>();
     engine.reserve().map_err(anyhow::Error::msg)?;
-    job.begin("audio.m4a".into()).map_err(anyhow::Error::msg)?;
-    let result = process(app.handle(), &audio);
-    job.finish(app.handle(), result);
+    let result = (|| -> anyhow::Result<()> {
+        crate::engine::fetcher::download(app.handle()).map_err(anyhow::Error::msg)?;
+        let audio = Path::new(env!("CARGO_MANIFEST_DIR")).join("../audio_samples/audio.m4a");
+        let mut samples = crate::audio::AudioDecoder::decode_to_16khz_mono(&audio)?;
+        samples.truncate(10 * 16_000);
+        // Reallocation releases the original full-file buffer before ASR processing.
+        samples.shrink_to_fit();
+        let job = app.state::<TranscriptionState>();
+        job.begin("audio.m4a".into()).map_err(anyhow::Error::msg)?;
+        let result = engine.with_sessions(app.handle(), |sessions| {
+            process_samples(app.handle(), sessions, &samples)
+        });
+        drop(samples);
+        job.finish(app.handle(), result);
+        let snapshot = job.snapshot().map_err(anyhow::Error::msg)?;
+        anyhow::ensure!(
+            snapshot.phase == TranscriptionPhase::Completed,
+            "Short Metal pipeline failed: {}",
+            snapshot.error.as_deref().unwrap_or("unknown safe error")
+        );
+        anyhow::ensure!(
+            snapshot
+                .segments
+                .iter()
+                .any(|segment| !segment.text.trim().is_empty()),
+            "No speech output"
+        );
+        assert_eq!(snapshot.current_chunk, snapshot.total_chunks);
+        crate::export::validate_segments(&snapshot.segments).map_err(anyhow::Error::msg)?;
+        assert_eq!(
+            engine.snapshot().map_err(anyhow::Error::msg)?.provider,
+            Some(crate::engine::Provider::Metal)
+        );
+        drop(snapshot);
+        // Discard the in-memory output before checking resource lifecycle.
+        *job.0
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Job lock failed"))? = Job::default();
+        let base = app
+            .state::<crate::model_storage::ModelStorage>()
+            .prepare()
+            .map_err(anyhow::Error::msg)?;
+        crate::engine::fetcher::validate(&base)?;
+        Ok(())
+    })();
     engine.release();
-    let snapshot = job.snapshot().map_err(anyhow::Error::msg)?;
-    anyhow::ensure!(
-        snapshot.phase == TranscriptionPhase::Completed,
-        "Local pipeline did not complete: {}",
-        snapshot.error.as_deref().unwrap_or("unknown failure")
-    );
-    anyhow::ensure!(
-        snapshot.segments.iter().any(|s| !s.text.trim().is_empty()),
-        "No speech was transcribed"
-    );
-    assert_eq!(snapshot.current_chunk, snapshot.total_chunks);
-    crate::export::validate_segments(&snapshot.segments).map_err(anyhow::Error::msg)?;
-    let mut edited = snapshot.segments;
-    edited[0].text = "Edited local verification text.".into();
-    let storage = app.state::<Storage>();
-    let saved = storage
-        .save(None, "audio.m4a".into(), edited.clone())
-        .map_err(anyhow::Error::msg)?;
-    let reopened = storage.read(&saved.id).map_err(anyhow::Error::msg)?;
-    assert_eq!(reopened.segments[0].text, edited[0].text);
-    for format in [ExportFormat::Txt, ExportFormat::Srt, ExportFormat::Vtt] {
-        let output = format_segments(&reopened.segments, format).map_err(anyhow::Error::msg)?;
-        assert!(output.contains("Edited local verification text."));
-    }
-    // Selecting valid resources recognizes them offline and never migrates either folder.
-    let alternate = tempfile::tempdir()?;
-    let original = app
-        .state::<crate::model_storage::ModelStorage>()
-        .path()
-        .map_err(anyhow::Error::msg)?;
-    let alternate_asr = alternate.path().join("parakeet");
-    std::fs::create_dir(&alternate_asr)?;
-    for (name, _) in crate::engine::resources::FILES {
-        std::fs::hard_link(
-            original.join("parakeet").join(name),
-            alternate_asr.join(name),
-        )?;
-    }
-    std::fs::hard_link(
-        original.join("silero_vad.onnx"),
-        alternate.path().join("silero_vad.onnx"),
-    )?;
-    engine.reserve().map_err(anyhow::Error::msg)?;
-    crate::model_storage::switch(app.handle(), Some(alternate.path().into()))
-        .map_err(anyhow::Error::msg)?;
-    engine.release();
-    assert_eq!(
-        engine.snapshot().map_err(anyhow::Error::msg)?.phase,
-        "ready"
-    );
-    engine.reserve().map_err(anyhow::Error::msg)?;
-    crate::model_storage::switch(app.handle(), None).map_err(anyhow::Error::msg)?;
-    engine.release();
-    assert_eq!(
-        engine.snapshot().map_err(anyhow::Error::msg)?.phase,
-        "ready"
-    );
-    crate::engine::fetcher::validate(&original)?;
-    crate::engine::fetcher::validate(alternate.path())?;
-    // A forced monotonic deadline verifies real session drop and subsequent offline reload.
+    result?;
     engine.unload_idle_at(
         app.handle(),
         std::time::Instant::now() + std::time::Duration::from_secs(301),
@@ -171,16 +120,23 @@ fn sample_pipeline(download: bool) -> anyhow::Result<()> {
         engine.snapshot().map_err(anyhow::Error::msg)?.phase,
         "unloaded"
     );
-    // A second call on silence reloads sessions and drops previous per-file VAD state.
+    // Reload does not contact Hugging Face and session errors do not unload the weights.
     engine
         .with_sessions(app.handle(), |sessions| {
-            assert!(sessions
-                .vad
-                .chunk_audio(&vec![0.0; 32_000])
-                .map_err(|_| "VAD failed".to_string())?
-                .is_empty());
+            sessions
+                .asr
+                .with_file(|file| file.transcribe_chunk(&[]))
+                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
             Ok(())
         })
         .map_err(anyhow::Error::msg)?;
+    assert_eq!(
+        engine.snapshot().map_err(anyhow::Error::msg)?.phase,
+        "ready"
+    );
+    // Mock apps do not run Tauri's Exit event; explicitly exercise the same worker teardown.
+    engine.shutdown();
+    println!("Milestone 7: verified GGUF, Metal device, <=10 s pipeline, session cleanup and offline reload passed.");
     Ok(())
 }

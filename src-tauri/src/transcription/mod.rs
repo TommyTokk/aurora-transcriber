@@ -73,7 +73,7 @@ impl TranscriptionState {
         };
         Ok(id)
     }
-    /// Checks cancellation at a safe boundary, without interrupting ONNX calls.
+    /// Checks cancellation at a safe boundary, without interrupting native inference calls.
     fn check(&self) -> Result<(), String> {
         let job = self.0.lock().map_err(|_| "Transcription is unavailable.")?;
         if job.cancel {
@@ -123,7 +123,7 @@ impl TranscriptionState {
             .map_err(|_| "Transcription is unavailable.".into())
     }
 }
-/// Runs decoding, VAD, and serial ASR while retaining both sessions throughout the job.
+/// Runs decoding and the offline pipeline while pinning resident ASR weights and VAD.
 fn process<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     path: &std::path::Path,
@@ -136,40 +136,56 @@ fn process<R: tauri::Runtime>(
         let samples = AudioDecoder::decode_to_16khz_mono(path).map_err(|_| {
             "Unable to decode this audio file. It may have changed since import.".to_string()
         })?;
-        job.check()?;
-        job.update(app, |s| s.phase = TranscriptionPhase::Vad);
-        let chunks = sessions
-            .vad
-            .chunk_audio(&samples)
-            .map_err(|_| "Voice detection failed.".to_string())?;
-        job.check()?;
-        job.update(app, |s| {
-            s.phase = TranscriptionPhase::Transcribing;
-            s.total_chunks = chunks.len();
-            s.percentage = Some(0.0);
-        });
-        for (index, chunk) in chunks.iter().enumerate() {
-            job.check()?;
-            let text = sessions
-                .asr
-                .transcribe_chunk(chunk.samples)
-                .map_err(|_| "Local transcription failed.".to_string())?;
-            job.check()?;
-            job.update(app, |s| {
-                s.segments.push(SubtitleSegment {
-                    start_sec: chunk.start_sec,
-                    end_sec: chunk.end_sec,
-                    text,
-                });
-                s.current_chunk = index + 1;
-                s.percentage = Some((index + 1) as f32 / chunks.len() as f32 * 100.0);
-            });
-        }
-        // Borrowed chunks must end before releasing the original sensitive audio buffer.
-        drop(chunks);
+        let result = process_samples(app, sessions, &samples);
         drop(samples);
-        Ok(())
+        result
     })
+}
+/// Processes borrowed mono samples through the same VAD, progress, and scoped ASR path.
+fn process_samples<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    sessions: &mut crate::engine::state::Sessions,
+    samples: &[f32],
+) -> Result<(), String> {
+    let job = app.state::<TranscriptionState>();
+    job.check()?;
+    job.update(app, |s| s.phase = TranscriptionPhase::Vad);
+    let chunks = sessions
+        .vad
+        .chunk_audio(samples)
+        .map_err(|_| "Voice detection failed.".to_string())?;
+    job.check()?;
+    job.update(app, |s| {
+        s.phase = TranscriptionPhase::Transcribing;
+        s.total_chunks = chunks.len();
+        s.percentage = Some(0.0);
+    });
+    // One RAII session owns native results for this file and drops on every exit.
+    sessions
+        .asr
+        .with_file(|file| -> Result<(), String> {
+            for (index, chunk) in chunks.iter().enumerate() {
+                job.check()?;
+                let text = file
+                    .transcribe_chunk(chunk.samples)
+                    .map_err(|error| error.to_string())?;
+                job.check()?;
+                job.update(app, |s| {
+                    s.segments.push(SubtitleSegment {
+                        start_sec: chunk.start_sec,
+                        end_sec: chunk.end_sec,
+                        text,
+                    });
+                    s.current_chunk = index + 1;
+                    s.percentage = Some((index + 1) as f32 / chunks.len() as f32 * 100.0);
+                });
+            }
+            Ok(())
+        })
+        .map_err(|error| error.to_string())??;
+    // Chunks borrow caller audio; session teardown has already freed native results.
+    drop(chunks);
+    Ok(())
 }
 /// Reserves an opaque native selection and starts one cancellable offline job.
 #[tauri::command]
