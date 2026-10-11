@@ -124,6 +124,13 @@ export function isNewSnapshot(
   current: TranscriptionSnapshot,
   incoming: TranscriptionSnapshot,
 ): boolean {
+  // Terminal jobs cannot publish new results; protect edits from late same-job responses.
+  if (
+    current.jobId !== null &&
+    current.jobId === incoming.jobId &&
+    ["completed", "cancelled", "error"].includes(current.phase)
+  )
+    return false;
   return incoming.revision > current.revision;
 }
 /** Reports whether a snapshot represents a background job that still owns resources. */

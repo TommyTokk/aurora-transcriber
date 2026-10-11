@@ -338,8 +338,11 @@ file's byte fraction; it is not an estimate of remaining time.
 
 After native import, **Transcribe audio** decodes, detects speech, and runs serial
 ASR on blocking workers. Progress identifies loading, decoding, VAD, and completed
-ASR chunks. **Cancel transcription** takes effect between phases/chunks; it waits
-for an already-running decoder, VAD pass, or native ASR call and discards partial results.
+ASR chunks. **Cancel transcription** signals a fresh job-scoped token, checked
+between phases/chunks and by Parakeet's native abort callback at supported decode
+boundaries. Loading, decoding and the CPU VAD pass finish their current operation;
+native GPU work is not forcibly terminated. Cancellation discards all partial text,
+including native abort results, and wins until terminal completion is published.
 Import, replacement, and removal are locked until the worker finishes. Files with
 no detected speech complete with an empty result.
 
@@ -363,6 +366,50 @@ strictly after 300 seconds with no reserved job. Their model files remain on dis
 The next job reloads them offline. Releasing sessions does not guarantee an
 immediate equivalent drop in process RSS: allocator/native runtime bookkeeping
 can remain resident. ONNX Runtime itself stays loaded for the process lifetime.
+
+## Milestone 11 pipeline and cancellation
+
+The serial chunk orchestrator is shared by production and deterministic tests.
+It preserves borrowed audio and original-file `f64` timestamps, with one scoped
+ASR session per file. The effective native session window must accept the existing
+25-second VAD chunks; incompatible configurations fail with a safe error.
+Events and command responses use one frontend application path. Terminal jobs
+reject further same-job snapshots so late responses cannot replace edited text.
+IPC payloads and the version-1 archive format remain unchanged.
+
+Decoding still reads the complete file into RAM before VAD. Long-file memory use
+therefore grows with decoded duration (mono 16 kHz `f32` alone uses about 230 MB
+per hour, with additional decoder/resampler/native overhead). This milestone
+adds neither streaming decode nor a promise of bounded memory for arbitrary files.
+Long timelines and many chunks are tested deterministically, without long ASR runs.
+
+The ignored functional test requires explicit authorization to use at most the
+first ten seconds of `audio_samples/audio.m4a` and existing verified local models:
+
+```sh
+export AURORA_M11_MODEL_BASE="/absolute/existing/model/folder"
+export ORT_DYLIB_PATH="/absolute/path/to/libonnxruntime.1.20.1.dylib"
+cargo test --workspace --locked --lib transcription::smoke::milestone11_metal_pipeline -- --ignored --exact --nocapture --test-threads=1
+```
+
+It hard-links models into a temporary profile, verifies the exact Metal device,
+transcribes the short clip with real CPU Silero VAD, exercises native abort and
+cancellation of a second short pipeline operation, edits/saves/reopens a transcript,
+and verifies TXT/SRT/VTT files inside that profile. It also checks joint idle
+unload and offline reload. No model download, CPU ASR, audio cache, transcript
+logging, or write to the personal archive occurs. The temporary profile is removed.
+
+Verification on macOS Apple Silicon (2026-10-11): 72 ordinary Rust tests and
+6 frontend tests passed, plus the explicit short Metal test and real Silero
+silence/repeated-call test. Frontend production build, Rust/Prettier formatting,
+and Clippy with warnings denied passed. Deterministic tests cover cancellation
+before processing, during simulated inference from another thread, between chunks,
+after the final chunk, typed native abort, failure cleanup, next-job isolation,
+long timestamps and ordered revisions. Existing tests cover the strict idle
+threshold, busy protection, native imports, archive validation and subtitle formatting.
+The functional checks use the production backend with a mock Tauri runtime;
+native picker/save-dialog interaction, packaging, Windows/Linux runtime execution
+and sustained long-file inference were not performed for this milestone.
 
 ## Historical milestone 6 verification and macOS packaging
 

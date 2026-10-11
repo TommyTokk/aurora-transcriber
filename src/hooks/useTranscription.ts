@@ -37,6 +37,20 @@ export function useTranscription() {
   const activeRef = useRef(false);
   activeRef.current = active;
 
+  /** Applies ordered job snapshots without overwriting a user's later edits. */
+  function applyJob(incoming: TranscriptionSnapshot) {
+    if (!isNewSnapshot(latest.current, incoming)) return;
+    latest.current = incoming;
+    setJob(incoming);
+    setName(incoming.name);
+    setDocument(null);
+    setDirty(false);
+    setNotice(null);
+    setSegments(incoming.segments);
+    setHasResult(incoming.phase === "completed");
+    if (incoming.error) setError(incoming.error);
+  }
+
   useEffect(() => {
     if (!native) return;
     let disposed = false;
@@ -46,18 +60,9 @@ export function useTranscription() {
       if (disposed) unlisten();
       else listeners.push(unlisten);
     }
-    /** Applies ordered job snapshots without overwriting a user's later edits. */
+    /** Ignores subscription callbacks after this effect has been disposed. */
     function receive(incoming: TranscriptionSnapshot) {
-      if (disposed || !isNewSnapshot(latest.current, incoming)) return;
-      latest.current = incoming;
-      setJob(incoming);
-      setName(incoming.name);
-      setDocument(null);
-      setDirty(false);
-      setNotice(null);
-      setSegments(incoming.segments);
-      setHasResult(incoming.phase === "completed");
-      if (incoming.error) setError(incoming.error);
+      if (!disposed) applyJob(incoming);
     }
     /** Accepts device events and command responses only when their revision advances. */
     function receiveModel(incoming: ModelSnapshot) {
@@ -141,15 +146,7 @@ export function useTranscription() {
           "process_audio_file",
           { audioId },
         );
-        if (isNewSnapshot(latest.current, result)) {
-          latest.current = result;
-          setJob(result);
-          setSegments(result.segments);
-          setName(result.name);
-          setDocument(null);
-          setDirty(false);
-          setHasResult(result.phase === "completed");
-        }
+        applyJob(result);
       });
     });
   }

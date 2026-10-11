@@ -96,3 +96,21 @@ test("model labels distinguish GGUF ASR from CPU ONNX VAD", () => {
     "Silero v5.1 — VAD · ONNX · CPU",
   );
 });
+
+/** Protects edited terminal results while allowing a newly reserved job to replace them. */
+test("terminal job snapshots preserve user edits", () => {
+  for (const phase of ["completed", "cancelled", "error"] as const) {
+    const current = { ...EMPTY_JOB, jobId: "finished", revision: 20, phase };
+    assert.equal(isNewSnapshot(current, { ...current, revision: 21 }), false);
+    assert.equal(isNewSnapshot(current, { ...current, revision: 19 }), false);
+    assert.equal(
+      isNewSnapshot(current, {
+        ...current,
+        jobId: "next",
+        revision: 21,
+        phase: "loading",
+      }),
+      true,
+    );
+  }
+});
