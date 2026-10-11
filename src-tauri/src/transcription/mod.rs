@@ -3,7 +3,9 @@ use crate::{audio::AudioDecoder, engine::EngineState, import::ImportState};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
+use transcribe_cpp::CancelToken;
 use uuid::Uuid;
+mod chunks;
 
 /// One editable text chunk with immutable original-file boundaries in seconds.
 #[derive(Clone, Serialize, Deserialize)]
@@ -49,7 +51,7 @@ pub struct TranscriptionState(Mutex<Job>);
 struct Job {
     snapshot: TranscriptionSnapshot,
     active: bool,
-    cancel: bool,
+    cancel: CancelToken,
 }
 impl TranscriptionState {
     /// Starts one job while rejecting duplicate commands before any audio work.
@@ -62,7 +64,7 @@ impl TranscriptionState {
         let revision = job.snapshot.revision + 1;
         *job = Job {
             active: true,
-            cancel: false,
+            cancel: CancelToken::new(),
             snapshot: TranscriptionSnapshot {
                 job_id: Some(id.clone()),
                 revision,
@@ -73,10 +75,17 @@ impl TranscriptionState {
         };
         Ok(id)
     }
-    /// Checks cancellation at a safe boundary, without interrupting native inference calls.
+    /// Clones the current job's atomic handle without borrowing resident model sessions.
+    fn cancel_token(&self) -> Result<CancelToken, String> {
+        self.0
+            .lock()
+            .map(|job| job.cancel.clone())
+            .map_err(|_| "Transcription is unavailable.".into())
+    }
+    /// Checks cancellation between loading, decoding, VAD, and native inference operations.
     fn check(&self) -> Result<(), String> {
         let job = self.0.lock().map_err(|_| "Transcription is unavailable.")?;
-        if job.cancel {
+        if job.cancel.is_cancelled() {
             Err("Transcription cancelled.".into())
         } else {
             Ok(())
@@ -99,7 +108,7 @@ impl TranscriptionState {
         if let Ok(mut job) = self.0.lock() {
             job.active = false;
             // A cancellation arriving after the last chunk still wins before publication.
-            if job.cancel {
+            if job.cancel.is_cancelled() {
                 job.snapshot.phase = TranscriptionPhase::Cancelled;
                 job.snapshot.segments.clear();
                 job.snapshot.error = None;
@@ -160,27 +169,23 @@ fn process_samples<R: tauri::Runtime>(
         s.total_chunks = chunks.len();
         s.percentage = Some(0.0);
     });
-    // One RAII session owns native results for this file and drops on every exit.
+    let cancel = job.cancel_token()?;
+    // A scoped native session retains the token and releases partial results on every exit.
     sessions
         .asr
-        .with_file(|file| -> Result<(), String> {
-            for (index, chunk) in chunks.iter().enumerate() {
-                job.check()?;
-                let text = file
-                    .transcribe_chunk(chunk.samples)
-                    .map_err(|error| error.to_string())?;
-                job.check()?;
-                job.update(app, |s| {
-                    s.segments.push(SubtitleSegment {
-                        start_sec: chunk.start_sec,
-                        end_sec: chunk.end_sec,
-                        text,
+        .with_file_cancellable(&cancel, |file| {
+            chunks::transcribe(
+                &chunks,
+                &cancel,
+                |samples| file.transcribe_chunk(samples),
+                |index, segment| {
+                    job.update(app, |s| {
+                        s.segments.push(segment);
+                        s.current_chunk = index;
+                        s.percentage = Some(index as f32 / chunks.len() as f32 * 100.0);
                     });
-                    s.current_chunk = index + 1;
-                    s.percentage = Some((index + 1) as f32 / chunks.len() as f32 * 100.0);
-                });
-            }
-            Ok(())
+                },
+            )
         })
         .map_err(|error| error.to_string())??;
     // Chunks borrow caller audio; session teardown has already freed native results.
@@ -217,15 +222,15 @@ pub async fn process_audio_file(
     app.state::<EngineState>().release();
     app.state::<TranscriptionState>().snapshot()
 }
-/// Requests cancellation of the current job without terminating active inference.
+/// Requests cooperative job cancellation and native abort where the model supports it.
 #[tauri::command]
 pub fn cancel_transcription(state: State<'_, TranscriptionState>) -> Result<(), String> {
-    let mut job = state
+    let job = state
         .0
         .lock()
         .map_err(|_| "Transcription is unavailable.")?;
     if job.active {
-        job.cancel = true;
+        job.cancel.cancel();
     }
     Ok(())
 }

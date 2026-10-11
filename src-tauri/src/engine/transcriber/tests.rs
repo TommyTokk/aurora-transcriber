@@ -68,3 +68,25 @@ fn native_errors_are_safe_and_typed() {
         EngineError::OutOfMemory
     ));
 }
+
+/// Checks native session windows without allocating a model or invoking CPU ASR.
+#[test]
+fn effective_session_window_is_compatible() -> anyhow::Result<()> {
+    for limit in [0, 25_000, 60_000] {
+        validate_session_limit(limit)?;
+    }
+    for limit in [-1, 1, 24_999] {
+        assert!(matches!(
+            validate_session_limit(limit),
+            Err(EngineError::SessionLimits)
+        ));
+    }
+    assert!(matches!(
+        map_native_error(transcribe_cpp::Error::Aborted {
+            message: "private partial".into(),
+            partial: None,
+        }),
+        EngineError::Cancelled
+    ));
+    Ok(())
+}

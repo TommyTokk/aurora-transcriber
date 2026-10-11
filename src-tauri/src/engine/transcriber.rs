@@ -1,7 +1,7 @@
 //! Resident GGUF weights with scoped, serial per-file native inference.
 use super::{providers, resources, AsrSelection, DeviceSnapshot, EngineError, Provider};
 use std::path::Path;
-use transcribe_cpp::{Model, RunOptions, Session, TimestampKind};
+use transcribe_cpp::{CancelToken, Feature, Model, RunOptions, Session, TimestampKind};
 
 const MAX_SAMPLES: usize = 25 * 16_000;
 
@@ -47,7 +47,14 @@ impl TranscriberEngine {
             )?;
             let device = providers::verify(&model, options)?;
             // Check session allocation before readiness, without retaining native results.
-            drop(model.session().map_err(map_native_error)?);
+            let session = model.session().map_err(map_native_error)?;
+            validate_session_limit(
+                session
+                    .limits()
+                    .map_err(map_native_error)?
+                    .effective_max_audio_ms,
+            )?;
+            drop(session);
             Ok(Self {
                 model,
                 device,
@@ -74,10 +81,28 @@ impl TranscriberEngine {
         &mut self,
         operation: impl FnOnce(&mut FileTranscriber) -> T,
     ) -> Result<T, EngineError> {
+        self.with_file_cancellable(&CancelToken::new(), operation)
+    }
+
+    /// Opens a file session with job-scoped native cancellation when supported by the model.
+    pub(crate) fn with_file_cancellable<T>(
+        &mut self,
+        cancel: &CancelToken,
+        operation: impl FnOnce(&mut FileTranscriber) -> T,
+    ) -> Result<T, EngineError> {
         providers::verify(&self.model, &self.options)?;
         let mut file = FileTranscriber {
             session: self.model.session().map_err(map_native_error)?,
         };
+        validate_session_limit(
+            file.session
+                .limits()
+                .map_err(map_native_error)?
+                .effective_max_audio_ms,
+        )?;
+        if self.model.supports(Feature::Cancellation) {
+            file.session.set_cancel_token(cancel);
+        }
         let result = operation(&mut file);
         drop(file);
         Ok(result)
@@ -107,6 +132,12 @@ impl FileTranscriber {
         if samples.is_empty() {
             return Ok(String::new());
         }
+        validate_session_limit(
+            self.session
+                .limits()
+                .map_err(map_native_error)?
+                .effective_max_audio_ms,
+        )?;
         let options = RunOptions {
             timestamps: TimestampKind::None,
             ..RunOptions::default()
@@ -117,6 +148,14 @@ impl FileTranscriber {
             .map_err(map_native_error)?;
         Ok(result.text)
     }
+}
+
+/// Rejects sessions too small for unchanged VAD windows; zero denotes no practical limit.
+fn validate_session_limit(max_audio_ms: i64) -> Result<(), EngineError> {
+    if max_audio_ms < 0 || (max_audio_ms > 0 && max_audio_ms < 25_000) {
+        return Err(EngineError::SessionLimits);
+    }
+    Ok(())
 }
 
 /// Rejects incompatible model metadata without inventing timing or language information.
@@ -142,6 +181,7 @@ fn validate_samples(samples: &[f32]) -> Result<(), EngineError> {
 /// Drops native error detail and partial transcripts instead of exposing them to IPC.
 fn map_native_error(error: transcribe_cpp::Error) -> EngineError {
     match error {
+        transcribe_cpp::Error::Aborted { .. } => EngineError::Cancelled,
         transcribe_cpp::Error::Backend(_) => EngineError::GpuUnavailable,
         transcribe_cpp::Error::OutOfMemory(_) => EngineError::OutOfMemory,
         transcribe_cpp::Error::ModelFileNotFound(_) => EngineError::Resources,

@@ -20,8 +20,8 @@ fn jobs_are_exclusive_and_cancellation_is_scoped() -> Result<(), String> {
         })
     });
     {
-        let mut job = state.0.lock().map_err(|_| "lock")?;
-        job.cancel = true;
+        let job = state.0.lock().map_err(|_| "lock")?;
+        job.cancel.cancel();
     }
     assert!(state.check().is_err());
     state.finish(app.handle(), Ok(()));
@@ -138,5 +138,187 @@ fn milestone7_metal_pipeline() -> anyhow::Result<()> {
     // Mock apps do not run Tauri's Exit event; explicitly exercise the same worker teardown.
     engine.shutdown();
     println!("Milestone 7: verified GGUF, Metal device, <=10 s pipeline, session cleanup and offline reload passed.");
+    Ok(())
+}
+
+/// Runs a long synthetic timeline through production orchestration without native inference.
+#[test]
+fn many_chunks_preserve_source_time_and_order() -> Result<(), String> {
+    let app = app();
+    let state = TranscriptionState::default();
+    state.begin("long.wav".into())?;
+    let samples = [0.0; 16];
+    let chunks: Vec<_> = (0..200)
+        .map(|i| crate::vad::AudioChunk {
+            samples: &samples,
+            start_sec: i as f64 * 26.0,
+            end_sec: i as f64 * 26.0 + 25.0,
+        })
+        .collect();
+    let mut revisions = Vec::new();
+    let result = chunks::transcribe(
+        &chunks,
+        &state.cancel_token()?,
+        |_| Ok("simulated".into()),
+        |index, segment| {
+            state.update(app.handle(), |s| {
+                s.segments.push(segment);
+                s.current_chunk = index;
+                s.total_chunks = chunks.len();
+            });
+            revisions.push(state.snapshot().map(|s| s.revision));
+        },
+    );
+    state.finish(app.handle(), result);
+    let snapshot = state.snapshot()?;
+    assert_eq!(snapshot.phase, TranscriptionPhase::Completed);
+    assert_eq!(snapshot.current_chunk, 200);
+    assert!(snapshot.segments[199].start_sec > 3600.0);
+    crate::export::validate_segments(&snapshot.segments)?;
+    let revisions: Vec<_> = revisions.into_iter().collect::<Result<_, _>>()?;
+    assert!(revisions.windows(2).all(|pair| pair[0] < pair[1]));
+    Ok(())
+}
+
+/// Covers cancellation at every publication boundary and failures after partial progress.
+#[test]
+fn chunk_cancellation_discards_results_and_allows_next_job() -> Result<(), String> {
+    let app = app();
+    let state = TranscriptionState::default();
+    let samples = [0.0];
+    let chunks: Vec<_> = (0..3)
+        .map(|i| crate::vad::AudioChunk {
+            samples: &samples,
+            start_sec: i as f64 * 2.0,
+            end_sec: i as f64 * 2.0 + 1.0,
+        })
+        .collect();
+    for scenario in 0..5 {
+        state.begin("sample.wav".into())?;
+        let cancel = state.cancel_token()?;
+        let mut calls = 0;
+        if scenario == 0 {
+            cancel.cancel();
+        }
+        let result = chunks::transcribe(
+            &chunks,
+            &cancel,
+            |_| {
+                calls += 1;
+                if scenario == 1 {
+                    cancel.cancel();
+                }
+                if scenario == 4 && calls == 2 {
+                    return Err(crate::engine::EngineError::Inference);
+                }
+                Ok("transient".into())
+            },
+            |index, segment| {
+                state.update(app.handle(), |s| s.segments.push(segment));
+                if (scenario == 2 && index == 1) || (scenario == 3 && index == 3) {
+                    cancel.cancel();
+                }
+            },
+        );
+        assert!(result.is_err());
+        state.finish(app.handle(), result);
+        let snapshot = state.snapshot()?;
+        assert!(snapshot.segments.is_empty());
+        assert_eq!(
+            snapshot.phase,
+            if scenario == 4 {
+                TranscriptionPhase::Error
+            } else {
+                TranscriptionPhase::Cancelled
+            }
+        );
+        assert_eq!(calls, [0, 1, 1, 3, 2][scenario]);
+    }
+    state.begin("silence.wav".into())?;
+    assert!(!state.cancel_token()?.is_cancelled());
+    let result = chunks::transcribe(
+        &[],
+        &state.cancel_token()?,
+        |_| Err(crate::engine::EngineError::Inference),
+        |_, _| {},
+    );
+    state.finish(app.handle(), result);
+    assert_eq!(state.snapshot()?.phase, TranscriptionPhase::Completed);
+    Ok(())
+}
+
+/// Classifies typed native aborts as cancelled without requiring an explicit cancel command.
+#[test]
+fn native_abort_is_terminal_cancellation() -> Result<(), String> {
+    let app = app();
+    let state = TranscriptionState::default();
+    state.begin("clip.wav".into())?;
+    let samples = [0.0];
+    let chunk = crate::vad::AudioChunk {
+        samples: &samples,
+        start_sec: 0.0,
+        end_sec: 1.0,
+    };
+    let result = chunks::transcribe(
+        &[chunk],
+        &state.cancel_token()?,
+        |_| Err(crate::engine::EngineError::Cancelled),
+        |_, _| {},
+    );
+    state.finish(app.handle(), result);
+    let result = state.snapshot()?;
+    assert_eq!(result.phase, TranscriptionPhase::Cancelled);
+    assert!(result.error.is_none() && result.segments.is_empty());
+    Ok(())
+}
+
+/// Cancels from another thread while simulated inference owns its scoped resources.
+#[test]
+fn cancellation_reaches_inflight_worker_and_releases_scope() -> anyhow::Result<()> {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Barrier,
+    };
+    /// Counts teardown of the fake native session on the error path.
+    struct SessionGuard(Arc<AtomicUsize>);
+    impl Drop for SessionGuard {
+        /// Records that the worker's session was freed before the test completes.
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let cancel = CancelToken::new();
+    let barrier = Arc::new(Barrier::new(2));
+    let released = Arc::new(AtomicUsize::new(0));
+    let worker_cancel = cancel.clone();
+    let worker_barrier = barrier.clone();
+    let worker_released = released.clone();
+    let worker = std::thread::spawn(move || {
+        let _session = SessionGuard(worker_released);
+        let samples = [0.0];
+        let chunk = crate::vad::AudioChunk {
+            samples: &samples,
+            start_sec: 0.0,
+            end_sec: 1.0,
+        };
+        chunks::transcribe(
+            &[chunk],
+            &worker_cancel,
+            |_| {
+                worker_barrier.wait();
+                worker_barrier.wait();
+                Ok("discarded".into())
+            },
+            |_, _| panic!("Cancelled inference must not publish text"),
+        )
+    });
+    barrier.wait();
+    cancel.cancel();
+    barrier.wait();
+    let result = worker
+        .join()
+        .map_err(|_| anyhow::anyhow!("Simulated worker failed"))?;
+    assert!(result.is_err());
+    assert_eq!(released.load(Ordering::SeqCst), 1);
     Ok(())
 }

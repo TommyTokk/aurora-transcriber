@@ -26,6 +26,10 @@ pub use transcriber::{FileTranscriber, TranscriberEngine};
 /// Safe domain messages; underlying paths and runtime diagnostics stay out of IPC.
 #[derive(Debug, Error)]
 pub enum EngineError {
+    #[error("Transcription cancelled.")]
+    Cancelled,
+    #[error("The ASR session cannot process the required 25-second audio chunks.")]
+    SessionLimits,
     #[error("Configure an absolute local model directory containing the supported models.")]
     Configuration,
     #[error("Local model verification failed. Download models to repair the installation.")]
