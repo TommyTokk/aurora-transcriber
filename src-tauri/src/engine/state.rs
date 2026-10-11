@@ -23,7 +23,7 @@ pub struct EngineSnapshot {
     pub download_file: Option<String>,
     pub percentage: Option<f32>,
 }
-/// Both reusable inference sessions, dropped together when idle.
+/// Resident ASR weights and CPU VAD session, dropped together when idle.
 pub(crate) struct Sessions {
     pub asr: TranscriberEngine,
     pub vad: SileroVad,
@@ -110,6 +110,18 @@ impl EngineState {
     pub(crate) fn release(&self) {
         self.busy.store(false, Ordering::Release);
     }
+    /// Releases resident native assets on a worker before the application exits.
+    pub(crate) fn shutdown(&self) {
+        let sessions = match self.resident.lock() {
+            Ok(mut resident) => resident.value.take(),
+            // Even a failed worker must not leave native assets to the UI's final state drop.
+            Err(poisoned) => poisoned.into_inner().value.take(),
+        };
+        if let Some(sessions) = sessions {
+            let worker = tauri::async_runtime::spawn_blocking(move || drop(sessions));
+            let _ = tauri::async_runtime::block_on(worker);
+        }
+    }
     /// Updates cheap public status without requiring the session mutex.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn publish<R: tauri::Runtime>(
@@ -134,7 +146,7 @@ impl EngineState {
             let _ = app.emit_to("main", "transcriber-state", &*snapshot);
         }
     }
-    /// Constructs verified local sessions on a blocking worker, with no network access.
+    /// Constructs verified local ASR weights and VAD on a worker without network access.
     fn load<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>) -> Result<Sessions, String> {
         let base = app.state::<ModelStorage>().prepare().inspect_err(|error| {
             self.publish(

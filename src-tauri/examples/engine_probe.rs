@@ -10,4 +10,17 @@ fn main() {
         Ok(engine) => println!("ready: {:?}", engine.provider()),
         Err(error) => println!("unavailable: {error}"),
     }
+    if std::env::args().any(|argument| argument == "--devices") {
+        // Hardware-only diagnostics; never enable native logging or print model paths.
+        println!(
+            "Metal available: {}",
+            transcribe_cpp::backend_available(transcribe_cpp::Backend::Metal)
+        );
+        for device in transcribe_cpp::devices() {
+            println!(
+                "device: {} · {} · {:?}",
+                device.name, device.kind, device.device_type
+            );
+        }
+    }
 }

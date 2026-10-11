@@ -5,7 +5,11 @@ React 19, TypeScript, Vite, and Tailwind CSS 4.
 
 ## Development
 
-Install Node.js/npm, Rust, and the native prerequisites for Tauri on your OS.
+Install Node.js/npm, Rust, CMake, a C++ toolchain, and the native prerequisites for Tauri.
+The macOS package minimum is **11.0**; actual execution is verified only on the current Mac.
+On macOS, install Apple Command Line Tools and run `brew install cmake`.
+The static Metal build embeds its shader sources and compiles them through Metal at runtime;
+it does not require the separate `xcrun metal` compiler or model downloads during builds.
 From the repository root:
 
 ```sh
@@ -27,7 +31,8 @@ folder solely for display. No audio is uploaded or cached.
 The workspace includes transcription controls, real progress, a segment editor,
 TXT/SRT/VTT export, and an explicitly saved local transcript archive. Use **Download
 models** to provision the supported ASR and VAD files. All transcription runs offline.
-Both sessions are reused while resident and released after more than five idle minutes.
+ASR weights and the CPU VAD session remain resident until more than five idle minutes.
+Each file gets a scoped Metal ASR session, released on completion, cancellation, or failure.
 The reference icon supplies colors only; the bundled icon is unchanged.
 
 `npm run dev` provides a browser layout preview; native import is available
@@ -95,7 +100,7 @@ conflicting runtime paths are rejected. Only trusted local native libraries are
 supported: preflight cannot sandbox executable code in an arbitrary library.
 
 The application retains VAD alongside ASR in Tauri state, loading and running both
-on blocking workers. Their sessions are released together after inactivity and
+on blocking workers. ASR weights and the VAD session are released together after inactivity and
 reloaded from disk when the next transcription starts. Decoded audio is scoped
 to a single job and dropped after its borrowed chunks are processed.
 
@@ -131,135 +136,89 @@ run without the required resources; it never downloads them. Real inference was 
 and ONNX Runtime 1.20.1 on macOS arm64. The byte-identical Hugging Face mirror is
 [Derur/silero-models](https://huggingface.co/Derur/silero-models/blob/main/vad/silero_vad.onnx).
 
-Rust dependencies preserve the versions specified in the project plan. ONNX
-`ort` and `ort-sys` are pinned to `2.0.0-rc.9`, with dynamic loading and OS-specific
-execution-provider features. The VAD library initializes its session only when explicitly
-constructed by a backend caller. ASR startup shares the same guarded runtime
-environment; native import does not initialize or use inference sessions. Lockfiles preserve the resolved Rust and frontend dependencies.
+Rust dependencies pin `ort`/`ort-sys` to `2.0.0-rc.9` for Silero VAD and
+`transcribe-cpp`/`transcribe-cpp-sys` to **0.2.4** for ASR. Lockfiles preserve
+resolved dependencies. The native ASR library is statically linked; macOS builds
+enable Metal with embedded shaders. ONNX Runtime remains bundled solely for VAD.
+All function documentation and important code comments are written in English.
 
-All function documentation and code comments are written in English.
+## Parakeet GGUF ASR API and configuration
 
-## Parakeet ASR API and configuration
+`TranscriberEngine::new(&Path)` loads the verified local **Parakeet TDT 0.6B v3 Q8_0**
+from [Handy's official GGUF repository](https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v3-gguf).
+The pinned revision is `90f082450fcbacdb54e5900c44ef697c9ea59622` and the sole ASR file is
+`parakeet-tdt-0.6b-v3-Q8_0.gguf` (739,508,576 bytes), with SHA-256
+`5859f77944efcd8eafa23a6350731960b2b55b2203df51f319665c807d802cc7`.
+Streaming checksum verification precedes native parsing. Metadata must identify
+`parakeet`, `tdt-0.6b-v3`, and a 16 kHz sample rate. Weights are CC-BY-4.0;
+attribute NVIDIA's original model and Handy's conversion when redistributing them.
 
-`TranscriberEngine::new(&Path)` loads the local FP32 export of
-[NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3),
-converted by [istupakov](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx).
-The supported revision is **8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce**.
-SHA-256 hashes for all six resources are enforced in
-`src-tauri/src/engine/resources.rs` with a bounded streaming buffer:
+This release requires **Apple Silicon and a working Metal GPU** for ASR.
+Initialization explicitly requests Metal and verifies the resolved backend and
+GPU device. CPU fallback, unresolved devices, and unsupported platforms return
+safe errors; import and the archive remain available. There is no CPU selector or
+`new_cpu` constructor. Windows/Linux GPU discovery and user device selection remain
+in milestone 8. CPU decoding/resampling and Silero VAD are expected.
 
-- `encoder-model.onnx` and `encoder-model.onnx.data`
-- `decoder_joint-model.onnx`
-- `nemo128.onnx`
-- `config.json` and `vocab.txt`
+`transcribe_chunk(&mut self, &[f32]) -> Result<String, EngineError>` preserves the
+finite mono 16 kHz contract in `[-1, 1]`, at most 25 seconds, with empty input
+returning empty text. Standalone calls own a short-lived native session.
+`with_file` provides one scoped `FileTranscriber` session for a file's serial chunks,
+without reloading the resident weights. Every run uses offline transcription,
+no native timestamps, no language hint, and no cross-chunk prompt. Only text is
+returned; source-relative subtitle boundaries continue to come from AURORA's VAD.
 
-This export uses an indexed SentencePiece vocabulary, not `tokenizer.json`.
-The model is CC-BY-4.0; preserve attribution when distributing its weights.
-The desktop app downloads model files explicitly from Hugging Face into its
-per-user managed directory. The macOS arm64 desktop includes its runtime;
-`npm run tauri -- dev` and Finder launch need no runtime environment variables.
+Tauri owns the model and CPU VAD in `EngineState`. Construction, inference, idle
+unloading, destination changes and exit cleanup use blocking workers. Native RAII
+session ownership releases results and compute buffers at file completion, error,
+cancellation or unwinding. Rust token/result copies drop after extracting text.
+Returned text belongs to the caller; release does not promise allocator zeroing.
+Native logging is disabled before loading, and `TRANSCRIBE_DUMP_DIR` is rejected
+when nonempty because upstream tensor dumps would bypass logging controls.
 
-`AURORA_ASR_MODEL_DIR` and `AURORA_SILERO_MODEL` are still used by explicitly
-run low-level tests and probes, but the desktop app resolves models itself.
+The existing command/event snapshot stays
+`{ phase, provider, error, missing, downloadFile, percentage }`, with the same
+phases and `provider: "Metal"` only after runtime verification. Error messages never
+include native error strings, partial transcripts or model paths. Model folder
+configuration, explicit downloads, retries and atomic verified promotion remain.
+The required installation is GGUF ASR plus `silero_vad.onnx`; old ASR ONNX files
+are preserved on disk but ignored. No automatic model download or audio cache is added.
 
-Standalone tools on other platforms use a trusted official ONNX Runtime
-**1.20.1** package for their host OS and architecture, with required provider dependencies. Cargo provider features
-do not guarantee that the native runtime package includes that provider.
-
-Tauri owns one `EngineState` for ASR and Silero VAD. The argument-free
-`transcriber_state()` command and `transcriber-state` event expose path-free
-`{ phase, provider, error, missing, downloadFile, percentage }` snapshots. Phases
-are `loading`, `missing`, `ready`, `downloading`, `unloaded`, and `unavailable`.
-Providers serialize as `Cpu`, `CoreMl`, `DirectMl`, or `Cuda`, where compiled.
-Errors are safe English messages. Missing models leave native import available;
-the explicit download action repairs absent or corrupt resources and initializes
-sessions without restarting. Runtime setup failures require fixing the trusted
-runtime configuration and restarting the app.
-
-`transcribe_chunk(&mut self, &[f32]) -> Result<String, EngineError>` accepts
-finite mono 16 kHz samples in `[-1, 1]`, at most 25 seconds. Empty input returns
-empty text. Nonempty inference errors propagate instead of returning partial
-text. The engine performs ONNX NeMo preprocessing, encoding, and bounded greedy
-TDT decoding, including blank-state rejection, duration prediction, and a
-10-token limit for zero-duration emissions per encoder step. Predictor state
-resets for every chunk. Vocabulary spacing follows the upstream reference.
-
-All platforms process chunks serially with batch 1. Preprocessing runs on CPU.
-ASR session creation attempts CoreML → CPU on macOS, DirectML → CUDA → CPU on
-Windows, and CUDA → CPU on Linux. The Windows sequence is the explicitly approved
-exception to AGENTS.md's immediate CPU fallback rule. Partial session pairs are
-dropped before fallback. DirectML uses sequential execution and disabled memory
-patterns. A configured provider can delegate unsupported operators to CPU.
-
-The caller must use a blocking worker for construction and inference. Tauri orchestration pins both sessions throughout one job. Existing blocking
-callers can borrow the resident ASR using `EngineState::with_engine`. Status has an independent mutex and remains
-readable during inference. `new_cpu` provides an explicit CPU constructor for
-reproducible tests. Transient inputs, features, predictor states, and token IDs
-are scoped to one call and released on success or error; returned text belongs
-to the caller. The safe rc.9 constructor copies borrowed input slices into a
-bounded chunk tensor. No audio cache, transcript log, or processing network
-request is introduced. Allocator arenas and memory-pattern reuse are disabled
-for CPU transient buffers; this is scoped release, not guaranteed memory zeroing.
+The desktop resolves models through native storage. Standalone GGUF probes use
+`AURORA_ASR_MODEL_DIR` without ORT. Tests that also use Silero require trusted
+`ORT_DYLIB_PATH` and the local VAD model. ONNX runtime preflight remains for VAD.
 
 ## ASR integration verification
 
-Ordinary tests and doc tests require no model downloads. Explicit integration
-runs require local resources. To generate independent expectations, install
-`onnx-asr==0.12.0`, `onnxruntime==1.20.1`, and `soundfile` in a development-only
-Python environment. Prepare explicitly authorized **mono 16 kHz WAV** samples
-up to 25 seconds so the reference and Rust engine receive identical waveforms.
-A local cases JSON initially contains objects such as:
-
-```json
-[
-  { "audio_path": "/absolute/it.wav", "language": "it" },
-  { "audio_path": "/absolute/en.wav", "language": "en" }
-]
-```
+Ordinary Rust/frontend tests do not download models or execute CPU ASR. The ignored
+Metal tests are explicit, local functional checks, with no speed benchmarks:
 
 ```sh
-python scripts/asr_reference.py --model-dir "$AURORA_ASR_MODEL_DIR" \
-  --cases /absolute/cases-input.json --output /absolute/cases-reference.json
-export AURORA_ASR_TEST_CASES=/absolute/cases-reference.json
-cargo test --workspace --locked --test parakeet -- --ignored --test-threads=1
-# Desktop pipeline integration is documented below.
-```
-
-The reference helper reads local files only and uses the selected export's exact
-`nemo128.onnx` graph. Its output contains reference text and is an explicitly
-requested test artifact. Do not use private recordings without authorization.
-The tests check IT/EN text parity, reversed repeated calls on one engine, input
-errors, platform-provider inference, isolated invalid-runtime processes, and
-ready-session reuse. The isolated subprocesses prevent environment/global ORT
-state from contaminating other tests.
-
-Local verification used two CC-BY-4.0 public examples:
-[MINDS-14 Italian](https://huggingface.co/datasets/PolyAI/minds14),
-`it-IT~CASH_DEPOSIT/CAe448511ca16ebe60e67e3b2cd2d159f2_1.wav` (9.52 seconds),
-and [FLEURS English](https://huggingface.co/datasets/google/fleurs),
-`en_us/validation`, row 0, ID 1548 (6.54 seconds). The Italian source was decoded
-and resampled offline with FFmpeg to mono Float32 16 kHz for identical-input
-comparison. Reference generation, CPU parity, repeated calls, real Silero, and
-platform fallback passed on macOS arm64. CoreML session initialization failed
-and CPU fallback succeeded; actual CoreML acceleration is not validated.
-Windows/DirectML and Linux/CUDA execution remain unverified on real hardware.
-
-A headless probe can validate the release `panic = "abort"` configuration:
-
-```sh
+export AURORA_ASR_MODEL_DIR=/absolute/model/directory/parakeet
+cargo test --workspace --locked --test parakeet metal_load_and_file_sessions -- --ignored --exact
 cargo run --release --locked --example engine_probe
 ```
 
-It prints only readiness or safe failure diagnostics. Missing configuration,
-a missing runtime, a non-library runtime file, and an incompatible-version test
-library were checked in release and
-returned `unavailable` without terminating the process. The macOS release bundle
-also opened without resource configuration and successfully imported a WAV through
-the native picker.
+The first check verifies loading and session recovery with empty inputs, including
+an error inside a file operation. The probe prints only readiness or safe errors.
+The application pipeline check downloads only missing/corrupt models into the
+explicitly supplied native profile and uses the first **at most ten seconds** of
+`audio_samples/audio.m4a`. It keeps audio and output in memory, saves no transcript,
+prints no transcript contents, and verifies Metal, VAD boundaries, progress,
+per-file teardown, inactivity unload and offline reload:
 
-Native dialog selection, cancellation, replacement, and removal were verified
-on macOS. Cross-application invalid drag-and-drop gestures have not been verified
-through UI automation in this session.
+```sh
+export AURORA_M7_PROFILE="/absolute/application/data/profile"
+export ORT_DYLIB_PATH="/absolute/trusted/libonnxruntime.1.20.1.dylib"
+cargo test --workspace --locked --lib transcription::tests::milestone7_metal_pipeline -- --ignored --exact --nocapture --test-threads=1
+```
+
+Historical milestone 5 used the istupakov FP32 ONNX export and verified CPU parity
+against onnx-asr 0.12.0 with short public Italian and English samples. CoreML
+initialization failed and CPU fallback worked. Those results do not describe the
+current GGUF backend. `scripts/asr_reference.py` and the retired ONNX ASR source
+modules remain historical until the milestone 12 cleanup; they are not active
+production inference or required verification steps.
 
 ## Desktop storage and workflow
 
@@ -270,7 +229,7 @@ Tauri resolves the current user's application data directory. On macOS it is
 com.aurora.desktop/
 ├── model-storage.json   # Version 1; null directory selects default
 ├── models/
-│   ├── parakeet/         # Six verified FP32 model resources
+│   ├── parakeet/         # Verified Parakeet v3 Q8_0 GGUF; legacy files may remain
 │   └── silero_vad.onnx   # Verified Silero v5.1 model
 └── transcripts/
     └── <uuid>.json       # Explicitly saved, versioned documents
@@ -311,7 +270,7 @@ file's byte fraction; it is not an estimate of remaining time.
 After native import, **Transcribe audio** decodes, detects speech, and runs serial
 ASR on blocking workers. Progress identifies loading, decoding, VAD, and completed
 ASR chunks. **Cancel transcription** takes effect between phases/chunks; it waits
-for an already-running decoder, VAD pass, or ONNX call and discards partial results.
+for an already-running decoder, VAD pass, or native ASR call and discards partial results.
 Import, replacement, and removal are locked until the worker finishes. Files with
 no detected speech complete with an empty result.
 
@@ -330,20 +289,21 @@ consecutively. Cancelling the dialog writes nothing. Subtitle text is escaped as
 plain text, and finite, nonoverlapping timestamps are validated before export.
 
 The idle timer uses a monotonic clock from the end of model loading or the last
-job, including failed/cancelled jobs. A one-second monitor releases both sessions
+job, including failed/cancelled jobs. A one-second monitor releases ASR weights and the VAD session
 strictly after 300 seconds with no reserved job. Their model files remain on disk.
 The next job reloads them offline. Releasing sessions does not guarantee an
 immediate equivalent drop in process RSS: allocator/native runtime bookkeeping
 can remain resident. ONNX Runtime itself stays loaded for the process lifetime.
 
-## Milestone 6 verification and macOS packaging
+## Historical milestone 6 verification and macOS packaging
 
 Frontend event-order tests use Node.js 22.6+ with type stripping (`npm test`).
 Rust tests cover atomic model promotion with simulated transfers, exclusive
 operations, controlled idle deadlines, loader reuse/reload, native selection IDs,
 cancellation cleanup, archive corruption, and subtitle formatting.
 
-Run the authorized sample integration explicitly with existing local resources:
+The following commands and full-file workflow document milestone 6 history.
+They are superseded by the bounded milestone 7 checks above and are not current test commands:
 
 ```sh
 export AURORA_ASR_MODEL_DIR=/absolute/path/to/parakeet-fp32
@@ -395,7 +355,24 @@ job reloaded them offline, and native cancellation discarded its partial result.
 this does not establish how much inference was delegated to the Apple Neural Engine.
 Unsigned `.app` and `.dmg` packaging succeeded with system packaging permissions.
 
-## Model storage intervention verification (2026-10-10)
+## Milestone 7 verification (2026-10-11)
+
+Verified on the available Apple Silicon Mac running macOS 26.6.2: 56 ordinary
+Rust tests, two frontend tests, Rust/Prettier formatting, Clippy with warnings
+denied, and the production frontend build. The authorized pipeline test downloaded
+and verified the pinned GGUF through model provisioning, used real Metal ASR and
+Silero CPU VAD on at most the first 10 seconds of `audio_samples/audio.m4a`, and
+checked usable output, timestamps, idle unload and offline reload. The extract stayed
+in memory; no transcript was printed or saved. No CPU ASR or benchmark was run.
+
+Unsigned arm64 `.app` and `.dmg` builds succeeded. The app declares macOS 11.0,
+contains the transcribe.cpp/GGML license notices and the retained Silero ONNX Runtime
+resources, and links ASR statically with system frameworks. Older macOS versions,
+Intel Macs and Windows/Linux execution remain unverified. The current Homebrew Rust
+toolchain emits a deployment-version warning for its prebuilt compiler builtins;
+declaring 11.0 does not establish execution compatibility on an older Mac.
+
+## Model storage intervention verification (historical, 2026-10-10)
 
 Verified on the available Apple Silicon Mac:
 

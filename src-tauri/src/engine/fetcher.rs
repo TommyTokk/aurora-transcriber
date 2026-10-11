@@ -131,7 +131,7 @@ pub(crate) fn download<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(
         .build()
         .map_err(|_| "Unable to initialize model download.")?;
     let parakeet = api.repo(Repo::with_revision(
-        "istupakov/parakeet-tdt-0.6b-v3-onnx".into(),
+        resources::REPOSITORY.into(),
         RepoType::Model,
         resources::REVISION.into(),
     ));
@@ -178,6 +178,25 @@ pub(crate) fn download<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Requires only GGUF ASR and Silero, preserving but ignoring legacy ASR files.
+    #[test]
+    fn legacy_asr_files_are_not_required() -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let (asr, vad) = paths(directory.path());
+        std::fs::create_dir(&asr)?;
+        std::fs::write(asr.join("encoder-model.onnx"), b"legacy")?;
+        assert_eq!(
+            missing(directory.path()),
+            vec![resources::MODEL_FILE, "silero_vad.onnx"]
+        );
+        std::fs::write(asr.join(resources::MODEL_FILE), b"corrupt GGUF")?;
+        std::fs::write(&vad, b"corrupt VAD")?;
+        assert!(missing(directory.path()).is_empty());
+        // Presence makes status cheap; loading still rejects every corrupt resource.
+        assert!(validate(directory.path()).is_err());
+        assert_eq!(std::fs::read(asr.join("encoder-model.onnx"))?, b"legacy");
+        Ok(())
+    }
     /// A corrupt transfer cannot replace a previously verified file.
     #[test]
     fn checksum_gates_atomic_promotion() -> anyhow::Result<()> {
@@ -190,7 +209,7 @@ mod tests {
         std::fs::write(&source, b"partial")?;
         assert!(promote(&source, &target, hash).is_err());
         assert_eq!(std::fs::read(&target)?, b"abc");
-        assert_eq!(missing(&dir.path().join("models")).len(), 7);
+        assert_eq!(missing(&dir.path().join("models")).len(), 2);
         Ok(())
     }
     /// Simulates failed and successful transfers, ensuring verified files never trigger network work.
@@ -214,7 +233,7 @@ mod tests {
     }
     /// Downloads only the small pinned-checksum VAD asset; ASR resources are reused locally.
     #[test]
-    #[ignore = "explicit network test requiring local AURORA_ASR_MODEL_DIR"]
+    #[ignore = "explicit network test requiring local GGUF AURORA_ASR_MODEL_DIR"]
     fn explicit_hugging_face_download() -> anyhow::Result<()> {
         let directory = tempfile::tempdir()?;
         let storage = ModelStorage::new(directory.path());

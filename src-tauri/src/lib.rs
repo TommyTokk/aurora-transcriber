@@ -12,6 +12,8 @@ pub mod vad;
 /// Audio import uses native selections and a blocking worker for decoding.
 /// ASR and VAD load on workers, release when idle, and reload offline on demand.
 pub fn run() -> anyhow::Result<()> {
+    // Native libraries must be silenced before the startup worker loads any models.
+    engine::initialize_native();
     tauri::Builder::default()
         .manage(import::ImportState::default())
         .manage(engine::EngineState::desktop())
@@ -52,6 +54,12 @@ pub fn run() -> anyhow::Result<()> {
                 .open_js_links_on_click(false)
                 .build(),
         )
-        .run(tauri::generate_context!())?;
+        .build(tauri::generate_context!())?
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                use tauri::Manager;
+                app.state::<engine::EngineState>().shutdown();
+            }
+        });
     Ok(())
 }

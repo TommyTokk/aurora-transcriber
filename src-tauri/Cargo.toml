@@ -29,6 +29,10 @@ ort = { version = "=2.0.0-rc.9", default-features = false, features = ["load-dyn
 # Keep the prerelease FFI dependency aligned with the pinned wrapper.
 ort-sys = { version = "=2.0.0-rc.9", default-features = false }
 
+# Pin both layers: the pre-1.0 native ABI must match the safe wrapper exactly.
+transcribe-cpp = { version = "=0.2.4", default-features = false }
+transcribe-cpp-sys = { version = "=0.2.4", default-features = false }
+
 # Audio & Tokenizers
 symphonia = { version = "0.5", features = ["all"] }
 rubato = "0.15"
@@ -40,6 +44,7 @@ hf-hub = "0.4"
 # Target-specific Execution Providers
 [target.'cfg(target_os = "macos")'.dependencies]
 ort = { version = "=2.0.0-rc.9", default-features = false, features = ["coreml"] }
+transcribe-cpp = { version = "=0.2.4", default-features = false, features = ["metal"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 ort = { version = "=2.0.0-rc.9", default-features = false, features = ["directml", "cuda"] }
