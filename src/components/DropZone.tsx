@@ -35,7 +35,7 @@ export function DropZone({
             ? "Choose your audio"
             : dragging
               ? "Drop your audio here"
-              : "A little audio. A lot of possibility."}
+              : "Drop your audio here"}
       </h2>
       <p>
         {validating

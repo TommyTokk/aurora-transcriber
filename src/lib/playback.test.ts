@@ -143,3 +143,62 @@ test("empty-source events while loading cannot cancel a valid clip", async () =>
   assert.equal(h.state().playing, true);
   h.player.dispose();
 });
+
+test("navigation pause preserves the loaded block, position and speed", async () => {
+  const h = harness();
+  await h.player.toggle(2, 20);
+  h.player.seek(7);
+  h.player.setRate(1.5);
+  h.player.pause();
+  assert.equal(h.state().playing, false);
+  assert.equal(h.state().index, 2);
+  assert.equal(h.state().position, 7);
+  assert.equal(h.state().rate, 1.5);
+  await h.player.toggle(2, 20);
+  assert.equal(h.state().playing, true);
+  assert.equal(h.state().position, 7);
+  assert.equal(h.loads(), 1);
+  h.player.dispose();
+});
+
+test("navigation during a clip load suppresses late autoplay but allows manual resume", async () => {
+  let finish: ((bytes: ArrayBuffer) => void) | undefined;
+  const h = harness(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  let plays = 0;
+  h.media.play = async () => {
+    plays++;
+  };
+  const loading = h.player.toggle(0, 10);
+  await Promise.resolve();
+  h.player.pause();
+  finish?.(new ArrayBuffer(4));
+  await loading;
+  assert.equal(plays, 0);
+  assert.equal(h.state().loading, false);
+  assert.equal(h.state().playing, false);
+  await h.player.toggle(0, 10);
+  assert.equal(plays, 1);
+  assert.equal(h.loads(), 1);
+  h.player.dispose();
+});
+
+test("navigation ignores a play promise that resolves after pause", async () => {
+  const h = harness();
+  let complete: (() => void) | undefined;
+  h.media.play = () =>
+    new Promise((resolve) => {
+      complete = resolve;
+    });
+  const playing = h.player.toggle(0, 10);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  h.player.pause();
+  complete?.();
+  await playing;
+  assert.equal(h.state().playing, false);
+  h.player.dispose();
+});

@@ -30,6 +30,7 @@ export function useTranscriptPlayback(
   }, [audioId, available]);
   return {
     snapshot,
+    pause: () => controller.current?.pause(),
     toggle: (index: number, duration: number) => {
       void controller.current?.toggle(index, duration);
     },

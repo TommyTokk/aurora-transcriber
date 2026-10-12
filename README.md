@@ -37,8 +37,20 @@ The bundled desktop icon uses the supplied artwork, preserved in
 `src-tauri/icons/source.svg`. Regenerate the icons with Tauri's `icon` command
 using `--fit cover` to preserve proportions while cropping to a square.
 
-`npm run dev` provides a browser layout preview; native import is available
-through `npm run tauri -- dev`.
+The Luminous workspace opens at 1280 × 800 with three views: **Transcription
+Studio**, **AI Models**, and **Settings**. Studio groups audio import, job controls
+and the archive alongside the transcript editor. AI Models displays the native
+ASR/VAD descriptors and model-folder actions; Settings owns the session-only
+ASR device preference. Navigation preserves unsaved edits and running jobs,
+while pausing audio without losing the current block, position or speed.
+
+The sidebar collapses below 1024 px and becomes top navigation below 768 px.
+Inter and Plus Jakarta Sans are bundled locally as WOFF2 fonts; their OFL
+licenses ship in `public/licenses`. No fonts are fetched during app use.
+
+`npm run dev` provides all three views as a browser layout preview with native
+actions disabled and no simulated models or transcripts. Native import is
+available through `npm run tauri -- dev`.
 
 ## Audio API
 

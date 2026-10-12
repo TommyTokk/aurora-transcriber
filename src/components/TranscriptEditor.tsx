@@ -1,8 +1,9 @@
 import { formatDuration } from "../lib/audioImport";
-import { useTranscriptPlayback } from "../hooks/useTranscriptPlayback";
+import type { useTranscriptPlayback } from "../hooks/useTranscriptPlayback";
 import { TranscriptBlockPlayer } from "./TranscriptBlockPlayer";
 import type { SubtitleSegment } from "../lib/transcription";
 interface Props {
+  player: ReturnType<typeof useTranscriptPlayback>;
   name: string;
   segments: SubtitleSegment[];
   disabled: boolean;
@@ -15,6 +16,7 @@ interface Props {
 }
 /** Edits review text while preserving the original immutable audio timestamps. */
 export function TranscriptEditor({
+  player,
   name,
   segments,
   disabled,
@@ -25,7 +27,6 @@ export function TranscriptEditor({
   associating,
   onAssociate,
 }: Props) {
-  const player = useTranscriptPlayback(audioId, audioAvailable);
   return (
     <section className="transcription-panel" aria-label="Transcript editor">
       <h2>{name || "Transcript"}</h2>
@@ -41,7 +42,7 @@ export function TranscriptEditor({
             onClick={onAssociate}
             disabled={disabled || associating}
           >
-            {associating ? "Associating…" : "Associa audio originale"}
+            {associating ? "Associating…" : "Associate original audio"}
           </button>
           {legacy && (
             <p className="muted">

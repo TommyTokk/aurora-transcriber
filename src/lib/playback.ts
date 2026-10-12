@@ -45,6 +45,7 @@ interface Dependencies {
 export class ReviewPlayback {
   private state = { ...EMPTY_PLAYBACK };
   private revision = 0;
+  private playbackIntent = 0;
   private url: string | null = null;
   private disposed = false;
   private deps: Dependencies;
@@ -96,13 +97,13 @@ export class ReviewPlayback {
     if (this.disposed) return;
     if (this.state.index === index && this.url) {
       if (this.state.playing) {
-        this.deps.media.pause();
-        this.update({ playing: false });
+        this.pause();
         return;
       }
       await this.play();
       return;
     }
+    const intent = ++this.playbackIntent;
     const revision = ++this.revision;
     this.clear();
     this.update({
@@ -123,7 +124,7 @@ export class ReviewPlayback {
       this.deps.media.playbackRate = this.state.rate;
       this.deps.media.load();
       this.update({ loading: false });
-      await this.play();
+      if (intent === this.playbackIntent) await this.play();
     } catch (failure) {
       if (revision !== this.revision || this.disposed) return;
       this.clear();
@@ -139,21 +140,36 @@ export class ReviewPlayback {
   }
   private async play() {
     const revision = this.revision;
+    const intent = ++this.playbackIntent;
     if (this.state.position >= this.state.duration) {
       this.deps.media.currentTime = 0;
       this.update({ position: 0 });
     }
     try {
       await this.deps.media.play();
-      if (revision === this.revision && !this.disposed)
+      if (
+        revision === this.revision &&
+        intent === this.playbackIntent &&
+        !this.disposed
+      )
         this.update({ playing: true, error: null });
     } catch {
-      if (revision === this.revision && !this.disposed)
+      if (
+        revision === this.revision &&
+        intent === this.playbackIntent &&
+        !this.disposed
+      )
         this.update({
           playing: false,
           error: "Playback could not start. Press Play to retry.",
         });
     }
+  }
+  /** Stops autoplay, including pending clip loads, without losing review position. */
+  pause() {
+    ++this.playbackIntent;
+    this.deps.media.pause();
+    this.update({ playing: false });
   }
   seek(position: number) {
     if (!this.url || !Number.isFinite(position)) return;
