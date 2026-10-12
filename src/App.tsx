@@ -3,6 +3,7 @@ import {
   AlertCircle,
   AudioLines,
   BrainCircuit,
+  FileText,
   LockKeyhole,
   Settings,
   SlidersHorizontal,
@@ -22,9 +23,10 @@ import { Models } from "./components/Models";
 import { AsrDeviceControl } from "./components/AsrDeviceControl";
 import { UnsavedDialog } from "./components/UnsavedDialog";
 
-type View = "studio" | "models" | "settings";
+type View = "studio" | "archive" | "models" | "settings";
 const navigation = [
   { id: "studio", label: "Transcription Studio", icon: AudioLines },
+  { id: "archive", label: "Saved transcripts", icon: FileText },
   { id: "models", label: "AI Models", icon: BrainCircuit },
   { id: "settings", label: "Settings", icon: Settings },
 ] as const;
@@ -38,6 +40,12 @@ const headings: Record<
     description:
       "Bring your audio into focus. Transcribe, listen and refine, all on your device.",
   },
+  archive: {
+    title: "Saved transcripts",
+    eyebrow: "YOUR LOCAL ARCHIVE",
+    description:
+      "Open a saved transcript to review and refine it in your studio.",
+  },
   models: {
     title: "Your AI Model Library",
     eyebrow: "LOCAL ENGINE & MODELS",
@@ -50,6 +58,7 @@ const headings: Record<
     description: "Choose how your device powers speech transcription.",
   },
 };
+/** Keeps the local workspace state alive while switching between application pages. */
 export default function App() {
   const [view, setView] = useState<View>("studio");
   const audio = useAudioImport();
@@ -83,9 +92,15 @@ export default function App() {
               : model.phase === "loading"
                 ? "Loading"
                 : "Models unavailable";
+  /** Changes the visible page and pauses playback without clearing workspace state. */
   function navigate(next: View) {
     if (next !== view) player.pause();
     setView(next);
+  }
+  /** Returns to the studio only after the guarded archive opening succeeds. */
+  function openTranscript(id: string) {
+    // Keep the archive visible if opening fails or the user keeps unsaved edits.
+    transcription.open(id, () => navigate("studio"));
   }
   return (
     <div className="app-shell">
@@ -173,94 +188,71 @@ export default function App() {
             </p>
           )}
           <div hidden={view !== "studio"}>
-            <div className="studio-grid">
-              <aside className="studio-context">
-                {audio.update.metadata && (
-                  <AudioFileCard
-                    file={audio.update.metadata}
-                    busy={audio.busy}
-                    onReplace={audio.chooseFile}
-                    onRemove={audio.removeFile}
-                  />
-                )}
-                <DropZone
-                  dragging={audio.dragging}
+            <div className="studio-content">
+              {audio.update.metadata && (
+                <AudioFileCard
+                  file={audio.update.metadata}
                   busy={audio.busy}
-                  available={audio.available}
-                  validating={audio.update.phase === "validating"}
-                  onChoose={audio.chooseFile}
+                  onReplace={audio.chooseFile}
+                  onRemove={audio.removeFile}
                 />
-                <TranscriptionControls
-                  model={model}
-                  canStart={
-                    !!audio.update.audioId &&
-                    !audio.busy &&
-                    transcription.connected
-                  }
-                  active={transcription.active}
-                  disabled={disabled}
-                  onStart={() => {
-                    if (audio.update.audioId)
-                      transcription.start(audio.update.audioId);
-                  }}
-                  onCancel={() => void transcription.cancel()}
-                />
-                <TranscriptArchive
-                  entries={transcription.archive}
-                  disabled={disabled || transcription.active}
-                  onOpen={transcription.open}
-                />
-              </aside>
-              <div className="transcript-canvas">
-                <ProgressTracker job={transcription.job} />
-                {transcription.hasResult ? (
-                  <>
-                    <div className="transcript-toolbar">
-                      <TranscriptActions
-                        dirty={transcription.dirty}
-                        disabled={disabled || transcription.active}
-                        onSave={transcription.save}
-                        onExport={transcription.exportFile}
-                      />
-                    </div>
-                    <TranscriptEditor
-                      player={player}
-                      name={transcription.name}
-                      segments={transcription.segments}
+              )}
+              <DropZone
+                dragging={audio.dragging}
+                busy={audio.busy}
+                available={audio.available}
+                validating={audio.update.phase === "validating"}
+                onChoose={audio.chooseFile}
+              />
+              <TranscriptionControls
+                model={model}
+                canStart={
+                  !!audio.update.audioId &&
+                  !audio.busy &&
+                  transcription.connected
+                }
+                active={transcription.active}
+                disabled={disabled}
+                onStart={() => {
+                  if (audio.update.audioId)
+                    transcription.start(audio.update.audioId);
+                }}
+                onCancel={() => void transcription.cancel()}
+              />
+
+              <ProgressTracker job={transcription.job} />
+              {transcription.hasResult && (
+                <>
+                  <div className="transcript-toolbar">
+                    <TranscriptActions
+                      dirty={transcription.dirty}
                       disabled={disabled || transcription.active}
-                      onEdit={transcription.edit}
-                      audioId={transcription.audioId}
-                      audioAvailable={transcription.audioAvailable}
-                      legacy={transcription.legacy}
-                      associating={transcription.associating}
-                      onAssociate={() => void transcription.associateAudio()}
+                      onSave={transcription.save}
+                      onExport={transcription.exportFile}
                     />
-                  </>
-                ) : (
-                  <section className="panel empty-transcript">
-                    <span className="feature-icon">
-                      <AudioLines size={32} />
-                    </span>
-                    <h2>
-                      {transcription.active
-                        ? "Your words are coming to light"
-                        : "A clear space for your words"}
-                    </h2>
-                    <p className="muted">
-                      {transcription.active
-                        ? "Processing your audio locally. You can visit Models or Settings while transcription continues."
-                        : audio.update.metadata
-                          ? "Your audio is selected. Start transcription when the local models are available."
-                          : "Choose an audio file or open a saved transcript to begin."}
-                    </p>
-                    <span className="privacy-badge">
-                      <LockKeyhole size={14} />
-                      No audio uploads. No tracking.
-                    </span>
-                  </section>
-                )}
-              </div>
+                  </div>
+                  <TranscriptEditor
+                    player={player}
+                    name={transcription.name}
+                    segments={transcription.segments}
+                    disabled={disabled || transcription.active}
+                    onEdit={transcription.edit}
+                    audioId={transcription.audioId}
+                    audioAvailable={transcription.audioAvailable}
+                    legacy={transcription.legacy}
+                    associating={transcription.associating}
+                    onAssociate={() => void transcription.associateAudio()}
+                  />
+                </>
+              )}
             </div>
+          </div>
+          <div hidden={view !== "archive"}>
+            <TranscriptArchive
+              entries={transcription.archive}
+              disabled={disabled || transcription.active}
+              onOpen={openTranscript}
+            />
           </div>
           <div hidden={view !== "models"}>
             <Models

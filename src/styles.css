@@ -299,14 +299,7 @@ p {
 .page-heading > .privacy-badge {
   flex-shrink: 0;
 }
-.studio-grid {
-  display: grid;
-  grid-template-columns: minmax(260px, 1fr) minmax(0, 2fr);
-  gap: 24px;
-  align-items: start;
-}
-.studio-context,
-.transcript-canvas,
+.studio-content,
 .models-content,
 .settings-content {
   display: grid;
@@ -335,21 +328,6 @@ p {
   height: 56px;
   border-radius: 16px;
   flex-shrink: 0;
-}
-.empty-transcript {
-  min-height: 420px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: 48px 32px;
-}
-.empty-transcript h2 {
-  margin-top: 24px;
-}
-.empty-transcript p {
-  max-width: 400px;
 }
 .action-row,
 .tag-row,
@@ -567,8 +545,6 @@ select {
   list-style: none;
   margin: 0;
   padding: 0;
-  max-height: 360px;
-  overflow: auto;
 }
 .archive-entry {
   display: grid;
@@ -730,13 +706,6 @@ progress {
   .app-body {
     margin-left: 80px;
   }
-  .studio-grid {
-    grid-template-columns: 1fr;
-  }
-  .studio-context {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    align-items: start;
-  }
 }
 @media (max-width: 767px) {
   .sidebar {
@@ -755,7 +724,7 @@ progress {
     display: none;
   }
   .sidebar nav {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 4px;
   }
   .nav-item {
@@ -791,7 +760,6 @@ progress {
     flex-direction: column;
     gap: 16px;
   }
-  .studio-grid,
   .model-grid {
     grid-template-columns: 1fr;
   }
@@ -800,9 +768,6 @@ progress {
   .drop-zone,
   .file-card {
     padding: 20px;
-  }
-  .empty-transcript {
-    min-height: 320px;
   }
   .block-player input[type="range"] {
     flex-basis: 100%;

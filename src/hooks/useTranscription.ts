@@ -213,8 +213,9 @@ export function useTranscription() {
       setArchive(await invoke<TranscriptSummary[]>("list_transcripts"));
     });
   }
-  /** Reopens a saved document after explicitly handling unsaved current edits. */
-  function open(id: string) {
+  /** Reopens a saved document after guarding unsaved edits, then notifies the caller on success. */
+  function open(id: string, onOpened?: () => void) {
+    // Defer both replacement and navigation until any unsaved-edit warning is accepted.
     guard(() => {
       void perform(async () => {
         if (activeRef.current) return;
@@ -232,6 +233,8 @@ export function useTranscription() {
         setDirty(false);
         setError(null);
         setNotice("Saved transcript opened.");
+        // A failed native request never reaches this callback, so its page stays visible.
+        onOpened?.();
       });
     });
   }
