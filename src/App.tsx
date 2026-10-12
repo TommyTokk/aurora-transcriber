@@ -88,7 +88,11 @@ export default function App() {
             <Models
               model={transcription.model}
               active={transcription.active}
-              disabled={transcription.pending || !transcription.connected}
+              disabled={
+                transcription.pending ||
+                transcription.associating ||
+                !transcription.connected
+              }
               onDownload={transcription.download}
               onSelectDevice={transcription.selectDevice}
             />
@@ -96,7 +100,11 @@ export default function App() {
               model={transcription.model}
               canStart={!!update.audioId && !busy && transcription.connected}
               active={transcription.active}
-              disabled={transcription.pending || !transcription.connected}
+              disabled={
+                transcription.pending ||
+                transcription.associating ||
+                !transcription.connected
+              }
               onStart={() => {
                 if (update.audioId) transcription.start(update.audioId);
               }}
@@ -115,6 +123,13 @@ export default function App() {
                   segments={transcription.segments}
                   disabled={transcription.pending || transcription.active}
                   onEdit={transcription.edit}
+                  audioId={transcription.audioId}
+                  audioAvailable={transcription.audioAvailable}
+                  legacy={transcription.legacy}
+                  associating={transcription.associating}
+                  onAssociate={() => {
+                    void transcription.associateAudio();
+                  }}
                 />
                 <TranscriptActions
                   dirty={transcription.dirty}
@@ -126,7 +141,11 @@ export default function App() {
             )}
             <TranscriptArchive
               entries={transcription.archive}
-              disabled={transcription.pending || transcription.active}
+              disabled={
+                transcription.pending ||
+                transcription.active ||
+                transcription.associating
+              }
               onOpen={transcription.open}
             />
             {transcription.confirmAction && (

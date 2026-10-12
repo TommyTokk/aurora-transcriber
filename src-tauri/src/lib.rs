@@ -3,6 +3,7 @@ pub mod engine;
 pub mod export;
 mod import;
 mod model_storage;
+mod playback;
 mod resources;
 mod storage;
 pub mod transcription;
@@ -17,6 +18,7 @@ pub fn run() -> anyhow::Result<()> {
     engine::initialize_native();
     tauri::Builder::default()
         .manage(import::ImportState::default())
+        .manage(playback::PlaybackState::default())
         .manage(engine::EngineState::desktop())
         .manage(transcription::TranscriptionState::default())
         .setup(|app| {
@@ -44,6 +46,9 @@ pub fn run() -> anyhow::Result<()> {
             transcription::process_audio_file,
             transcription::cancel_transcription,
             transcription::transcription_state,
+            playback::associate_transcript_audio,
+            playback::load_transcript_block,
+            playback::release_transcript_audio,
             storage::save_transcript,
             storage::list_transcripts,
             storage::open_transcript,

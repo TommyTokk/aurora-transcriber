@@ -15,12 +15,22 @@ pub(super) struct MonoPipeline {
     input_frames: usize,
     delay_remaining: usize,
     mono: Vec<f32>,
+    range: std::ops::Range<usize>,
+    emitted: usize,
 }
 
 impl MonoPipeline {
     /// Creates reusable channel buffers for `sample_rate` and `channels`.
     /// Returns an error for invalid parameters or FFT initialization failure.
     pub(super) fn new(sample_rate: usize, channels: usize) -> Result<Self, AudioDecodeError> {
+        Self::with_range(sample_rate, channels, 0..usize::MAX)
+    }
+
+    pub(super) fn with_range(
+        sample_rate: usize,
+        channels: usize,
+        range: std::ops::Range<usize>,
+    ) -> Result<Self, AudioDecodeError> {
         if sample_rate == 0 || channels == 0 {
             return Err(AudioDecodeError::InvalidParameters(
                 "zero sample rate or channel count",
@@ -56,6 +66,8 @@ impl MonoPipeline {
             input_frames: 0,
             delay_remaining,
             mono: Vec::new(),
+            range,
+            emitted: 0,
         })
     }
 
@@ -98,12 +110,37 @@ impl MonoPipeline {
             // Remove startup delay incrementally without copying the entire result.
             let skip = self.delay_remaining.min(written);
             self.delay_remaining -= skip;
-            append_mono(&self.output, skip, written, &mut self.mono)?;
+            append_mono(
+                &self.output,
+                skip,
+                written,
+                &mut self.mono,
+                &self.range,
+                &mut self.emitted,
+            )?;
         } else {
-            append_mono(&self.input, 0, self.filled, &mut self.mono)?;
+            append_mono(
+                &self.input,
+                0,
+                self.filled,
+                &mut self.mono,
+                &self.range,
+                &mut self.emitted,
+            )?;
         }
         self.filled = 0;
         Ok(())
+    }
+
+    pub(super) fn duration_seconds(&self) -> f64 {
+        let frames = (self.input_frames as u128 * TARGET_SAMPLE_RATE as u128
+            + self.sample_rate as u128 / 2)
+            / self.sample_rate as u128;
+        frames as f64 / TARGET_SAMPLE_RATE as f64
+    }
+
+    pub(super) fn range_complete(&self) -> bool {
+        self.emitted >= self.range.end
     }
 
     /// Flushes the final block and delayed tail, returning exactly the rounded duration.
@@ -129,11 +166,15 @@ impl MonoPipeline {
             for channel in &mut self.input {
                 channel.fill(0.0);
             }
-            while self.mono.len() < target_frames {
+            while self.emitted < target_frames {
                 self.process_block()?;
             }
         }
-        self.mono.truncate(target_frames);
+        self.mono.truncate(
+            target_frames
+                .min(self.range.end)
+                .saturating_sub(self.range.start),
+        );
         let mono = std::mem::take(&mut self.mono);
         drop(self);
         Ok(mono)
@@ -147,6 +188,8 @@ fn append_mono(
     start: usize,
     end: usize,
     mono: &mut Vec<f32>,
+    range: &std::ops::Range<usize>,
+    emitted: &mut usize,
 ) -> Result<(), AudioDecodeError> {
     for index in start..end {
         let mut sum = 0.0_f64;
@@ -157,7 +200,10 @@ fn append_mono(
             }
             sum += f64::from(sample);
         }
-        mono.push((sum / channels.len() as f64).clamp(-1.0, 1.0) as f32);
+        if range.contains(emitted) {
+            mono.push((sum / channels.len() as f64).clamp(-1.0, 1.0) as f32);
+        }
+        *emitted += 1;
     }
     Ok(())
 }

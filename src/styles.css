@@ -515,3 +515,25 @@ textarea:focus-visible {
   outline: 3px solid var(--accent-ink);
   outline-offset: 2px;
 }
+
+.block-player {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0.75rem 0;
+}
+.block-player input[type="range"] {
+  flex: 1;
+  min-width: 120px;
+}
+.block-player p {
+  flex-basis: 100%;
+  margin: 0;
+}
+.block-player span {
+  font-variant-numeric: tabular-nums;
+}
+.block-player select {
+  margin-left: 0.4rem;
+}

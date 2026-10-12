@@ -39,6 +39,8 @@ ort-sys = { version = "=2.0.0-rc.9", default-features = false }
 transcribe-cpp = { version = "=0.2.4", default-features = false }
 transcribe-cpp-sys = { version = "=0.2.4", default-features = false }
 
+hound = "3.5"
+
 # Audio decoding, resampling and explicit model provisioning
 symphonia = { version = "0.5", features = ["all"] }
 rubato = "0.15"
@@ -57,4 +59,3 @@ tauri-build = { version = "2.0", features = [] } # Required for Tauri v2 app bun
 
 [dev-dependencies]
 tauri = { version = "2.0", features = ["test"] }
-hound = "3.5"

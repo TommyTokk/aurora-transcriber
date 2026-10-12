@@ -6,8 +6,9 @@ use tauri::{Emitter, Manager, State};
 use transcribe_cpp::CancelToken;
 use uuid::Uuid;
 mod chunks;
+mod grouping;
 
-/// One editable text chunk with immutable original-file boundaries in seconds.
+/// One editable review segment with immutable original-file boundaries in seconds.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubtitleSegment {
@@ -34,6 +35,8 @@ pub enum TranscriptionPhase {
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptionSnapshot {
     pub job_id: Option<String>,
+    pub audio_id: Option<String>,
+    pub duration_seconds: Option<f64>,
     pub revision: u64,
     pub phase: TranscriptionPhase,
     pub name: String,
@@ -111,11 +114,15 @@ impl TranscriptionState {
             if job.cancel.is_cancelled() {
                 job.snapshot.phase = TranscriptionPhase::Cancelled;
                 job.snapshot.segments.clear();
+                job.snapshot.audio_id = None;
+                job.snapshot.duration_seconds = None;
                 job.snapshot.error = None;
             } else if let Err(error) = result {
                 job.snapshot.phase = TranscriptionPhase::Error;
                 job.snapshot.error = Some(error);
                 job.snapshot.segments.clear();
+                job.snapshot.audio_id = None;
+                job.snapshot.duration_seconds = None;
             } else {
                 job.snapshot.phase = TranscriptionPhase::Completed;
                 job.snapshot.percentage = Some(100.0);
@@ -145,9 +152,27 @@ fn process<R: tauri::Runtime>(
         let samples = AudioDecoder::decode_to_16khz_mono(path).map_err(|_| {
             "Unable to decode this audio file. It may have changed since import.".to_string()
         })?;
+        let duration = samples.len() as f64 / crate::audio::TARGET_SAMPLE_RATE as f64;
+        let hash = crate::playback::fingerprint(path, || job.check().is_err())?;
         let result = process_samples(app, sessions, &samples);
         drop(samples);
-        result
+        result?;
+        job.check()?;
+        let grouped = grouping::group(job.snapshot()?.segments, duration);
+        let audio_id = app.state::<crate::playback::PlaybackState>().register(
+            Some(path.to_path_buf()),
+            Some(crate::playback::SourceMetadata {
+                duration_seconds: duration,
+                sha256: hash,
+            }),
+            &grouped,
+        )?;
+        job.update(app, |s| {
+            s.segments = grouped;
+            s.audio_id = Some(audio_id);
+            s.duration_seconds = Some(duration);
+        });
+        Ok(())
     })
 }
 /// Processes borrowed mono samples through the same VAD, progress, and scoped ASR path.

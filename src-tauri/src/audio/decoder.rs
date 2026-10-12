@@ -16,6 +16,8 @@ use super::resampler::MonoPipeline;
 /// Failures encountered while reading, decoding, or converting local audio.
 #[derive(Debug, Error)]
 pub enum AudioDecodeError {
+    #[error("Audio loading cancelled")]
+    Cancelled,
     #[error("Unable to read the audio file: {0}")]
     Io(#[from] std::io::Error),
     #[error("Audio decoding failed: {0}")]
@@ -52,6 +54,32 @@ impl AudioDecoder {
     /// This synchronous operation must run on a blocking worker when called by UI
     /// code. The caller owns the returned samples and must drop them after use.
     pub fn decode_to_16khz_mono(path: &Path) -> Result<Vec<f32>, AudioDecodeError> {
+        Self::decode_range(path, 0..usize::MAX, || false)
+    }
+
+    /// Decodes with bounded output storage and cooperative cancellation at packet boundaries.
+    pub fn decode_range(
+        path: &Path,
+        range: std::ops::Range<usize>,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Vec<f32>, AudioDecodeError> {
+        Self::decode_with_duration(path, range, cancelled).map(|(samples, _)| samples)
+    }
+
+    /// Validates the full stream without retaining decoded audio samples.
+    pub fn duration_seconds(path: &Path) -> Result<f64, AudioDecodeError> {
+        Self::decode_with_duration(path, usize::MAX..usize::MAX, || false)
+            .map(|(_, duration)| duration)
+    }
+
+    fn decode_with_duration(
+        path: &Path,
+        range: std::ops::Range<usize>,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<(Vec<f32>, f64), AudioDecodeError> {
+        if range.start > range.end {
+            return Err(AudioDecodeError::InvalidParameters("reversed audio range"));
+        }
         let file = File::open(path)?;
         if file.metadata()?.len() == 0 {
             return Err(AudioDecodeError::EmptyAudio);
@@ -88,8 +116,12 @@ impl AudioDecoder {
         let mut initial_spec = None;
         let mut sample_buffer = None;
         let mut packet_end = parameters.start_ts;
+        let mut range_complete = false;
 
         loop {
+            if cancelled() {
+                return Err(AudioDecodeError::Cancelled);
+            }
             let packet = match format.next_packet() {
                 Ok(packet) => packet,
                 // EOF is normal only at a packet boundary. Decoder EOF is an error.
@@ -122,10 +154,15 @@ impl AudioDecoder {
             }
             if initial_spec.is_none() {
                 initial_spec = Some(spec);
-                pipeline = Some(MonoPipeline::new(
-                    spec.rate as usize,
-                    spec.channels.count(),
-                )?);
+                pipeline = Some(if range == (0..usize::MAX) {
+                    MonoPipeline::new(spec.rate as usize, spec.channels.count())?
+                } else {
+                    MonoPipeline::with_range(
+                        spec.rate as usize,
+                        spec.channels.count(),
+                        range.clone(),
+                    )?
+                });
             }
             if decoded.frames() == 0 {
                 continue;
@@ -145,13 +182,18 @@ impl AudioDecoder {
                 .as_mut()
                 .ok_or(AudioDecodeError::EmptyAudio)?
                 .push_interleaved(buffer.samples())?;
+            if pipeline.as_ref().is_some_and(MonoPipeline::range_complete) {
+                range_complete = true;
+                break;
+            }
         }
 
         // Declared packet duration catches premature EOF in containers that expose it.
-        if parameters
-            .n_frames
-            .is_some_and(|frames| packet_end < parameters.start_ts.saturating_add(frames))
-            || decoder.finalize().verify_ok == Some(false)
+        if !range_complete
+            && (parameters
+                .n_frames
+                .is_some_and(|frames| packet_end < parameters.start_ts.saturating_add(frames))
+                || decoder.finalize().verify_ok == Some(false))
         {
             return Err(AudioDecodeError::CorruptAudio);
         }
@@ -159,6 +201,8 @@ impl AudioDecoder {
         drop(sample_buffer);
         drop(decoder);
         drop(format);
-        pipeline.ok_or(AudioDecodeError::EmptyAudio)?.finish()
+        let pipeline = pipeline.ok_or(AudioDecodeError::EmptyAudio)?;
+        let duration = pipeline.duration_seconds();
+        Ok((pipeline.finish()?, duration))
     }
 }

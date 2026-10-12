@@ -13,6 +13,7 @@ import {
   type TranscriptionSnapshot,
   type TranscriptDocument,
   type TranscriptSummary,
+  type OpenTranscript,
 } from "../lib/transcription";
 
 /** Coordinates native jobs, edited text, explicit persistence, and archive reopening. */
@@ -23,6 +24,12 @@ export function useTranscription() {
   const latest = useRef(EMPTY_JOB);
   const [segments, setSegments] = useState<SubtitleSegment[]>([]);
   const [document, setDocument] = useState<TranscriptDocument | null>(null);
+  const [audioId, setAudioId] = useState<string | null>(null);
+  const currentAudioId = useRef(audioId);
+  currentAudioId.current = audioId;
+  const [audioAvailable, setAudioAvailable] = useState(false);
+  const [legacy, setLegacy] = useState(false);
+  const [associating, setAssociating] = useState(false);
   const [name, setName] = useState("");
   const [hasResult, setHasResult] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -43,6 +50,9 @@ export function useTranscription() {
     latest.current = incoming;
     setJob(incoming);
     setName(incoming.name);
+    setAudioId(incoming.audioId);
+    setAudioAvailable(incoming.phase === "completed" && !!incoming.audioId);
+    setLegacy(false);
     setDocument(null);
     setDirty(false);
     setNotice(null);
@@ -195,6 +205,7 @@ export function useTranscription() {
         id: document?.id ?? null,
         name,
         segments,
+        audioId,
       });
       setDocument(value);
       setDirty(false);
@@ -207,9 +218,13 @@ export function useTranscription() {
     guard(() => {
       void perform(async () => {
         if (activeRef.current) return;
-        const value = await invoke<TranscriptDocument>("open_transcript", {
+        const opened = await invoke<OpenTranscript>("open_transcript", {
           id,
         });
+        const value = opened.document;
+        setAudioId(opened.audioId);
+        setAudioAvailable(false);
+        setLegacy(value.version === 1);
         setDocument(value);
         setName(value.name);
         setSegments(value.segments);
@@ -220,6 +235,28 @@ export function useTranscription() {
       });
     });
   }
+  /** Associates audio without locking the text editor or replacing unsaved edits. */
+  async function associateAudio() {
+    if (!audioId || associating || pending || active) return;
+    setAssociating(true);
+    setError(null);
+    try {
+      const associated = await invoke<boolean>("associate_transcript_audio", {
+        audioId,
+      });
+      if (associated && currentAudioId.current === audioId)
+        setAudioAvailable(true);
+    } catch (failure) {
+      setError(
+        typeof failure === "string"
+          ? failure
+          : "Unable to associate the original audio.",
+      );
+    } finally {
+      setAssociating(false);
+    }
+  }
+
   /** Exports the current edited segments using a backend native save dialog. */
   function exportFile(format: "txt" | "srt" | "vtt") {
     void perform(async () => {
@@ -244,6 +281,11 @@ export function useTranscription() {
   return {
     model,
     job,
+    audioId,
+    audioAvailable,
+    legacy,
+    associating,
+    associateAudio,
     segments,
     name,
     hasResult,

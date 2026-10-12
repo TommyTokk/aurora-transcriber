@@ -1,4 +1,4 @@
-/** Editable chunk text with original-file timestamp boundaries. */
+/** Editable review text with original-file timestamp boundaries. */
 export interface SubtitleSegment {
   startSec: number;
   endSec: number;
@@ -47,6 +47,8 @@ export interface ModelSnapshot {
 /** Ordered snapshot for one background transcription job. */
 export interface TranscriptionSnapshot {
   jobId: string | null;
+  audioId: string | null;
+  durationSeconds: number | null;
   revision: number;
   phase:
     | "idle"
@@ -72,6 +74,11 @@ export interface TranscriptDocument {
   createdAt: number;
   updatedAt: number;
   segments: SubtitleSegment[];
+  source?: { durationSeconds: number; sha256: string };
+}
+export interface OpenTranscript {
+  document: TranscriptDocument;
+  audioId: string;
 }
 /** Lightweight entry in the user-owned local archive. */
 export interface TranscriptSummary {
@@ -81,6 +88,8 @@ export interface TranscriptSummary {
 }
 export const EMPTY_JOB: TranscriptionSnapshot = {
   jobId: null,
+  audioId: null,
+  durationSeconds: null,
   revision: 0,
   phase: "idle",
   name: "",
