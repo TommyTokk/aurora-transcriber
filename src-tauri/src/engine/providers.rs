@@ -8,7 +8,7 @@ use uuid::Uuid;
 static NATIVE_STARTUP: Once = Once::new();
 static DEVICES: OnceLock<Vec<RegisteredDevice>> = OnceLock::new();
 
-/// Actual initialized ASR backend; CPU is allowed only by explicit selection.
+/// Actual initialized ASR backend, including an explicitly attempted CPU fallback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum Provider {
     Metal,
@@ -49,10 +49,19 @@ pub enum AsrSelection {
 }
 
 impl Default for AsrSelection {
-    /// Starts every process with GPU-only Auto, without persisting CPU consent.
+    /// Starts every process with Auto; preferences are not persisted.
     fn default() -> Self {
         Self::Auto {}
     }
+}
+
+/// Safe initialization diagnostics retained with resident weights.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FallbackReason {
+    NoGpu,
+    GpuInitializationFailed,
+    GpuOutOfMemory,
 }
 
 /// Hardware-only diagnostics, with an identifier valid for this process alone.
@@ -135,13 +144,13 @@ pub fn discover_devices() -> Result<Vec<DeviceSnapshot>, EngineError> {
     Ok(registry()?.iter().map(|d| d.snapshot.clone()).collect())
 }
 
-/// Resolves a preference into ordered candidates without ever admitting implicit CPU.
+/// Resolves exact GPU requests followed by one registered CPU candidate.
 fn candidate_indices(
     devices: &[DeviceSnapshot],
     selection: &AsrSelection,
     order: &[Provider],
 ) -> Result<Vec<usize>, EngineError> {
-    let indices: Vec<_> = match selection {
+    let mut indices: Vec<_> = match selection {
         AsrSelection::Auto {} => order
             .iter()
             .flat_map(|provider| {
@@ -162,16 +171,22 @@ fn candidate_indices(
             .into_iter()
             .collect(),
     };
+    if matches!(selection, AsrSelection::Device { .. }) && indices.is_empty() {
+        return Err(EngineError::SelectionUnavailable);
+    }
+    if !matches!(selection, AsrSelection::Cpu {}) {
+        indices.extend(devices.iter().position(|d| d.backend == Provider::Cpu));
+    }
     if indices.is_empty() {
         return Err(match selection {
-            AsrSelection::Auto {} => EngineError::GpuUnavailable,
-            _ => EngineError::SelectionUnavailable,
+            AsrSelection::Cpu {} => EngineError::SelectionUnavailable,
+            _ => EngineError::CpuFallbackUnavailable,
         });
     }
     Ok(indices)
 }
 
-/// Builds exact native requests for Auto candidates or one explicitly chosen device.
+/// Builds exact native requests, including CPU recovery for GPU preferences.
 pub(super) fn options(selection: &AsrSelection) -> Result<Vec<ModelOptions>, EngineError> {
     let devices = registry()?;
     let snapshots: Vec<_> = devices.iter().map(|d| d.snapshot.clone()).collect();
@@ -225,7 +240,7 @@ pub(super) fn verify(model: &Model, options: &ModelOptions) -> Result<DeviceSnap
         .ok_or(EngineError::SelectionUnavailable)
 }
 
-/// Rejects fallback and a different GPU even when its vendor and class match the request.
+/// Rejects silent native substitution, including CPU returned for a GPU request.
 fn verify_placement(
     provider: Provider,
     requested: Backend,
@@ -237,19 +252,47 @@ fn verify_placement(
     Ok(())
 }
 
-/// Tries ordered exact requests; each failed loader must release its partial native assets.
+/// Tries exact requests; the loader must release failed assets before returning.
 pub(super) fn try_candidates<T>(
     candidates: &[ModelOptions],
+    selection: &AsrSelection,
     mut load: impl FnMut(&ModelOptions) -> Result<T, EngineError>,
-) -> Result<T, EngineError> {
-    let mut failure = EngineError::GpuUnavailable;
+) -> Result<(T, Option<FallbackReason>), EngineError> {
+    let mut reason = None;
     for options in candidates {
+        let cpu = options.backend == Backend::Cpu;
+        let fallback = cpu && !matches!(selection, AsrSelection::Cpu {});
+        if fallback {
+            let recovery = *reason.get_or_insert(FallbackReason::NoGpu);
+            eprintln!("ASR recovery: backend=CPU reason={recovery:?}");
+        }
         match load(options) {
-            Ok(value) => return Ok(value),
-            Err(error) => failure = error,
+            Ok(value) => return Ok((value, if fallback { reason } else { None })),
+            Err(error) if fallback => {
+                return Err(EngineError::CpuFallbackFailed(Box::new(error)));
+            }
+            Err(error) if !cpu => {
+                let category = match error {
+                    EngineError::GpuUnavailable => "gpu_unavailable",
+                    EngineError::ModelLoad => "model_load",
+                    EngineError::OutOfMemory => "gpu_out_of_memory",
+                    _ => return Err(error),
+                };
+                eprintln!(
+                    "ASR initialization failed: backend={:?} category={category}",
+                    options.backend
+                );
+                // Preserve memory pressure even if a later GPU fails differently.
+                if matches!(error, EngineError::OutOfMemory) {
+                    reason = Some(FallbackReason::GpuOutOfMemory);
+                } else if reason.is_none() {
+                    reason = Some(FallbackReason::GpuInitializationFailed);
+                }
+            }
+            Err(error) => return Err(error),
         }
     }
-    Err(failure)
+    Err(EngineError::CpuFallbackUnavailable)
 }
 
 #[cfg(test)]

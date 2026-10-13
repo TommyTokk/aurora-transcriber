@@ -90,3 +90,55 @@ fn effective_session_window_is_compatible() -> anyhow::Result<()> {
     ));
     Ok(())
 }
+
+/// ABI/version failures remain terminal while native load errors permit recovery.
+#[test]
+fn native_compatibility_is_not_a_load_failure() {
+    for error in [
+        transcribe_cpp::Error::VersionMismatch("private".into()),
+        transcribe_cpp::Error::BadStructSize("private".into()),
+    ] {
+        assert!(matches!(
+            map_native_error(error),
+            EngineError::NativeCompatibility
+        ));
+    }
+    assert!(matches!(
+        map_native_error(transcribe_cpp::Error::ModelLoad("private".into())),
+        EngineError::ModelLoad
+    ));
+}
+
+/// Exercises a simulated GPU failure followed by real offline CPU model/session loading.
+#[test]
+#[ignore = "requires pinned local GGUF via AURORA_ASR_MODEL_DIR; no audio inference"]
+fn cpu_recovery_loads_verified_native_sessions() -> anyhow::Result<()> {
+    let directory = std::env::var_os("AURORA_ASR_MODEL_DIR")
+        .ok_or_else(|| anyhow::anyhow!("Set AURORA_ASR_MODEL_DIR"))?;
+    let mut candidates = vec![transcribe_cpp::ModelOptions {
+        backend: transcribe_cpp::Backend::Metal,
+        device: None,
+    }];
+    candidates.extend(providers::options(&AsrSelection::Cpu {})?);
+    let (mut engine, reason) =
+        providers::try_candidates(&candidates, &AsrSelection::Auto {}, |options| {
+            if options.backend != transcribe_cpp::Backend::Cpu {
+                return Err(EngineError::GpuUnavailable);
+            }
+            TranscriberEngine::new_with_selection(Path::new(&directory), &AsrSelection::Cpu {})
+        })?;
+    engine.fallback_reason = reason;
+    assert_eq!(engine.provider(), Provider::Cpu);
+    assert_eq!(
+        engine.fallback_reason(),
+        Some(FallbackReason::GpuInitializationFailed)
+    );
+    let failure = engine.with_file(|file| -> Result<(), EngineError> {
+        assert_eq!(file.transcribe_chunk(&[])?, "");
+        Err(EngineError::Inference)
+    })?;
+    assert!(failure.is_err());
+    engine.with_file(|file| file.transcribe_chunk(&[]))??;
+    assert_eq!(engine.provider(), Provider::Cpu);
+    Ok(())
+}

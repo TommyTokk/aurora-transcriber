@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  fallbackNotice,
   modelLabel,
   EMPTY_JOB,
   EMPTY_MODEL,
@@ -113,4 +114,21 @@ test("terminal job snapshots preserve user edits", () => {
       true,
     );
   }
+});
+
+/** Every recovery cause explains CPU placement, reduced speed and how to retry. */
+test("CPU recovery notices explain the cause and next action", () => {
+  for (const reason of [
+    "no_gpu",
+    "gpu_initialization_failed",
+    "gpu_out_of_memory",
+  ] as const) {
+    const message = fallbackNotice(reason);
+    assert.match(message, /CPU is active/);
+    assert.match(message, /may be slower/);
+    assert.match(message, /Reload selection/);
+  }
+  assert.match(fallbackNotice("no_gpu"), /No compatible GPU/);
+  assert.match(fallbackNotice("gpu_out_of_memory"), /insufficient memory/);
+  assert.equal(EMPTY_MODEL.fallbackReason, null);
 });

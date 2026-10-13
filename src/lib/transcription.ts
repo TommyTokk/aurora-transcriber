@@ -6,6 +6,20 @@ export interface SubtitleSegment {
 }
 /** Native ASR backend names after runtime classification. */
 export type AsrBackend = "Metal" | "CUDA" | "Vulkan" | "CPU";
+/** Safe reason for automatic CPU recovery during initialization. */
+export type FallbackReason =
+  "no_gpu" | "gpu_initialization_failed" | "gpu_out_of_memory";
+
+/** Formats the persistent CPU recovery notice without exposing native error details. */
+export function fallbackNotice(reason: FallbackReason): string {
+  const causes: Record<FallbackReason, string> = {
+    no_gpu: "No compatible GPU is available.",
+    gpu_initialization_failed: "GPU initialization failed.",
+    gpu_out_of_memory: "GPU initialization failed due to insufficient memory.",
+  };
+  return `${causes[reason]} CPU is active. Transcription may be slower. Reload selection to retry the GPU.`;
+}
+
 /** Session-only user preference; device IDs belong to the current native process. */
 export type AsrSelection =
   { mode: "auto" } | { mode: "cpu" } | { mode: "device"; id: string };
@@ -39,6 +53,7 @@ export interface ModelSnapshot {
   device: AsrDevice | null;
   phase: string;
   provider: AsrBackend | null;
+  fallbackReason: FallbackReason | null;
   error: string | null;
   missing: string[];
   downloadFile: string | null;
@@ -107,6 +122,7 @@ export const EMPTY_MODEL: ModelSnapshot = {
   device: null,
   phase: "loading",
   provider: null,
+  fallbackReason: null,
   error: null,
   missing: [],
   downloadFile: null,

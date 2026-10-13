@@ -114,7 +114,7 @@ fn replacement_drops_before_load_and_retains_failure() -> Result<(), String> {
     Ok(())
 }
 
-/// Failed reloads preserve explicit CPU opt-in, clear active diagnostics, and publish newer revisions.
+/// Failed reloads preserve explicit CPU selection, clear active diagnostics, and publish newer revisions.
 #[test]
 fn selection_survives_failure_and_destination_reload() -> anyhow::Result<()> {
     let app = tauri::test::mock_app();
@@ -232,6 +232,77 @@ fn snapshot_serializes_public_model_identities() -> anyhow::Result<()> {
         ] {
             assert!(!fields.contains_key(private));
         }
+    }
+    Ok(())
+}
+
+/// Recovery metadata follows resident weights and only appears in ready snapshots.
+#[test]
+fn recovery_snapshot_is_atomic_cleared_and_restored() -> anyhow::Result<()> {
+    let app = tauri::test::mock_app();
+    let state = EngineState::default();
+    let device = DeviceSnapshot {
+        id: "cpu".into(),
+        backend: Provider::Cpu,
+        name: "CPU".into(),
+        description: "Synthetic".into(),
+    };
+    state.update(app.handle(), |s| {
+        s.selection = AsrSelection::Device { id: "gpu".into() };
+        s.devices = vec![device.clone()];
+    });
+    let mut resident = Residency {
+        value: Some((device, Some(FallbackReason::GpuOutOfMemory))),
+        last_used: Instant::now(),
+    };
+    for phase in [
+        "loading",
+        "unloaded",
+        "downloading",
+        "missing",
+        "unavailable",
+    ] {
+        let (device, reason) = resident
+            .get_or_load(|| Err("Must reuse resident diagnostics".into()))
+            .map_err(anyhow::Error::msg)?;
+        state.publish_ready(app.handle(), device.clone(), *reason);
+        let ready = state.snapshot().map_err(anyhow::Error::msg)?;
+        assert_eq!(ready.phase, "ready");
+        assert_eq!(ready.provider, Some(Provider::Cpu));
+        assert_eq!(ready.fallback_reason, Some(FallbackReason::GpuOutOfMemory));
+        assert!(ready.error.is_none());
+        assert_eq!(
+            serde_json::to_value(&ready)?["fallbackReason"],
+            "gpu_out_of_memory"
+        );
+        state.publish(app.handle(), phase, None, None, vec![], None, None);
+        let cleared = state.snapshot().map_err(anyhow::Error::msg)?;
+        assert_eq!(cleared.revision, ready.revision + 1);
+        assert_eq!(cleared.selection, ready.selection);
+        assert!(cleared.fallback_reason.is_none());
+        assert!(cleared.device.is_none() && cleared.provider.is_none());
+    }
+    for reason in [
+        FallbackReason::NoGpu,
+        FallbackReason::GpuInitializationFailed,
+    ] {
+        let (device, _) = resident
+            .get_or_load(|| Err("Must reuse weights".into()))
+            .map_err(anyhow::Error::msg)?;
+        state.publish_ready(app.handle(), device.clone(), Some(reason));
+        assert_eq!(
+            state
+                .snapshot()
+                .map_err(anyhow::Error::msg)?
+                .fallback_reason,
+            Some(reason)
+        );
+        state.publish_ready(app.handle(), device.clone(), None);
+        assert!(state
+            .snapshot()
+            .map_err(anyhow::Error::msg)?
+            .fallback_reason
+            .is_none());
     }
     Ok(())
 }

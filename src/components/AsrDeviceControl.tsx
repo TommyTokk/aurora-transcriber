@@ -1,4 +1,5 @@
 import {
+  fallbackNotice,
   selectionFromValue,
   selectionValue,
   type AsrSelection,
@@ -30,7 +31,7 @@ export function AsrDeviceControl({ model, disabled, onSelect }: Props) {
           onChange={(event) => onSelect(selectionFromValue(event.target.value))}
           aria-describedby="asr-device-policy"
         >
-          <option value="auto">Auto · GPU only</option>
+          <option value="auto">Auto · GPU, then CPU</option>
           {gpuDevices.map((device) => (
             <option key={device.id} value={device.id}>
               {device.backend} · {device.description || device.name} (
@@ -43,7 +44,7 @@ export function AsrDeviceControl({ model, disabled, onSelect }: Props) {
             </option>
           )}
           <option value="cpu" disabled={!cpuAvailable}>
-            CPU · explicit opt-in
+            CPU
           </option>
         </select>
         <button
@@ -58,12 +59,17 @@ export function AsrDeviceControl({ model, disabled, onSelect }: Props) {
           ? `Active ASR (transcribe.cpp): ${model.device.backend} · ${model.device.description || model.device.name} (${model.device.name})`
           : "ASR (transcribe.cpp) device is not active."}
       </p>
+      {model.phase === "ready" &&
+        model.device?.backend === "CPU" &&
+        model.fallbackReason && (
+          <p role="status">{fallbackNotice(model.fallbackReason)}</p>
+        )}
       <p>VAD: CPU (ONNX)</p>
       <p className="muted" id="asr-device-policy">
         Auto uses Metal on Apple Silicon, CUDA then Vulkan on Windows/Linux. GPU
-        choices never switch to CPU. Choosing CPU explicitly enables CPU ASR for
-        this app session. Every restart returns to Auto. Voice detection runs
-        independently on CPU.
+        choices fall back to CPU if initialization fails. Choosing CPU skips GPU
+        attempts. Choices apply for this app session. Every restart returns to
+        Auto. Voice detection runs independently on CPU.
       </p>
     </fieldset>
   );

@@ -1,5 +1,7 @@
 //! Resident GGUF weights with scoped, serial per-file native inference.
-use super::{providers, resources, AsrSelection, DeviceSnapshot, EngineError, Provider};
+use super::{
+    providers, resources, AsrSelection, DeviceSnapshot, EngineError, FallbackReason, Provider,
+};
 use std::path::Path;
 use transcribe_cpp::{CancelToken, Feature, Model, RunOptions, Session, TimestampKind};
 
@@ -10,6 +12,7 @@ pub struct TranscriberEngine {
     model: Model,
     device: DeviceSnapshot,
     options: transcribe_cpp::ModelOptions,
+    fallback_reason: Option<FallbackReason>,
 }
 
 /// Owns one file's native results and context; dropping it releases session resources.
@@ -18,7 +21,7 @@ pub struct FileTranscriber {
 }
 
 impl TranscriberEngine {
-    /// Loads the pinned local Q8_0 model on an automatic GPU without CPU fallback.
+    /// Loads the pinned local Q8_0 model on an automatic GPU with CPU recovery.
     ///
     /// Directories must be absolute and contain the verified GGUF filename.
     /// Tauri constructs this on a blocking worker and retains it in application
@@ -27,40 +30,49 @@ impl TranscriberEngine {
         Self::new_with_selection(model_dir, &AsrSelection::Auto {})
     }
 
-    /// Loads on ordered GPU candidates or the explicitly opted-in CPU, entirely offline.
+    /// Loads on ordered GPU candidates with CPU recovery, entirely offline.
     ///
     /// Failed attempts release model and session allocations before the next GPU
-    /// is tried. Explicit selections produce exactly one candidate and never fall back.
+    /// is tried. Explicit GPU choices try only that GPU before CPU recovery.
     pub fn new_with_selection(
         model_dir: &Path,
         selection: &AsrSelection,
     ) -> Result<Self, EngineError> {
         let candidates = providers::options(selection)?;
         resources::validate(model_dir)?;
-        providers::try_candidates(&candidates, |options| {
-            let model = Model::load_with(model_dir.join(resources::MODEL_FILE), options)
-                .map_err(map_native_error)?;
-            validate_contract(
-                &model.arch(),
-                &model.variant(),
-                model.capabilities().native_sample_rate,
-            )?;
-            let device = providers::verify(&model, options)?;
-            // Check session allocation before readiness, without retaining native results.
-            let session = model.session().map_err(map_native_error)?;
-            validate_session_limit(
-                session
-                    .limits()
-                    .map_err(map_native_error)?
-                    .effective_max_audio_ms,
-            )?;
-            drop(session);
-            Ok(Self {
-                model,
-                device,
-                options: options.clone(),
-            })
-        })
+        let (mut engine, fallback_reason) =
+            providers::try_candidates(&candidates, selection, |options| {
+                let model = Model::load_with(model_dir.join(resources::MODEL_FILE), options)
+                    .map_err(map_native_error)?;
+                validate_contract(
+                    &model.arch(),
+                    &model.variant(),
+                    model.capabilities().native_sample_rate,
+                )?;
+                let device = providers::verify(&model, options)?;
+                // Check session allocation before readiness, without retaining native results.
+                let session = model.session().map_err(map_native_error)?;
+                validate_session_limit(
+                    session
+                        .limits()
+                        .map_err(map_native_error)?
+                        .effective_max_audio_ms,
+                )?;
+                drop(session);
+                Ok(Self {
+                    model,
+                    device,
+                    options: options.clone(),
+                    fallback_reason: None,
+                })
+            })?;
+        engine.fallback_reason = fallback_reason;
+        Ok(engine)
+    }
+
+    /// Reports safe CPU recovery diagnostics for these resident weights.
+    pub fn fallback_reason(&self) -> Option<FallbackReason> {
+        self.fallback_reason
     }
 
     /// Reports only the backend verified during model initialization.
@@ -185,9 +197,10 @@ fn map_native_error(error: transcribe_cpp::Error) -> EngineError {
         transcribe_cpp::Error::Backend(_) => EngineError::GpuUnavailable,
         transcribe_cpp::Error::OutOfMemory(_) => EngineError::OutOfMemory,
         transcribe_cpp::Error::ModelFileNotFound(_) => EngineError::Resources,
-        transcribe_cpp::Error::ModelLoad(_)
-        | transcribe_cpp::Error::VersionMismatch(_)
-        | transcribe_cpp::Error::BadStructSize(_) => EngineError::ModelLoad,
+        transcribe_cpp::Error::ModelLoad(_) => EngineError::ModelLoad,
+        transcribe_cpp::Error::VersionMismatch(_) | transcribe_cpp::Error::BadStructSize(_) => {
+            EngineError::NativeCompatibility
+        }
         transcribe_cpp::Error::InputTooLong(_) => EngineError::InvalidSamples,
         _ => EngineError::Inference,
     }

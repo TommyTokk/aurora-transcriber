@@ -1,5 +1,7 @@
 //! Serialized model residency with cheap status snapshots and offline reload.
-use super::{fetcher, AsrSelection, DeviceSnapshot, EngineError, Provider, TranscriberEngine};
+use super::{
+    fetcher, AsrSelection, DeviceSnapshot, EngineError, FallbackReason, Provider, TranscriberEngine,
+};
 use crate::{model_storage::ModelStorage, vad::SileroVad};
 use serde::Serialize;
 use std::{
@@ -23,6 +25,7 @@ pub struct EngineSnapshot {
     pub device: Option<DeviceSnapshot>,
     pub phase: String,
     pub provider: Option<Provider>,
+    pub fallback_reason: Option<FallbackReason>,
     pub error: Option<String>,
     pub missing: Vec<String>,
     pub download_file: Option<String>,
@@ -94,6 +97,7 @@ impl Default for EngineState {
                 device: None,
                 phase: "loading".into(),
                 provider: None,
+                fallback_reason: None,
                 error: None,
                 missing: vec![],
                 download_file: None,
@@ -169,10 +173,30 @@ impl EngineState {
             snapshot.phase = phase.into();
             snapshot.provider = device.as_ref().map(|d| d.backend);
             snapshot.device = device;
+            snapshot.fallback_reason = None;
             snapshot.error = error;
             snapshot.missing = missing;
             snapshot.download_file = download_file;
             snapshot.percentage = percentage;
+        });
+    }
+
+    /// Publishes verified readiness and recovery diagnostics in one ordered event.
+    fn publish_ready<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        device: DeviceSnapshot,
+        fallback_reason: Option<FallbackReason>,
+    ) {
+        self.update(app, |snapshot| {
+            snapshot.phase = "ready".into();
+            snapshot.provider = Some(device.backend);
+            snapshot.device = Some(device);
+            snapshot.fallback_reason = fallback_reason;
+            snapshot.error = None;
+            snapshot.missing.clear();
+            snapshot.download_file = None;
+            snapshot.percentage = None;
         });
     }
 
@@ -203,6 +227,7 @@ impl EngineState {
                 snapshot.phase = "loading".into();
                 snapshot.provider = None;
                 snapshot.device = None;
+                snapshot.fallback_reason = None;
                 snapshot.error = None;
                 snapshot.percentage = None;
                 snapshot.download_file = None;
@@ -277,14 +302,10 @@ impl EngineState {
             Ok(Sessions { asr, vad })
         })();
         match &result {
-            Ok(sessions) => self.publish(
+            Ok(sessions) => self.publish_ready(
                 app,
-                "ready",
-                Some(sessions.asr.device().clone()),
-                None,
-                vec![],
-                None,
-                None,
+                sessions.asr.device().clone(),
+                sessions.asr.fallback_reason(),
             ),
             Err(error) => self.publish(
                 app,
@@ -328,14 +349,10 @@ impl EngineState {
         // A successful download can reuse already resident weights. Restore ready
         // diagnostics rather than leaving the UI stuck in the downloading phase.
         if self.snapshot()?.phase != "ready" {
-            self.publish(
+            self.publish_ready(
                 app,
-                "ready",
-                Some(sessions.asr.device().clone()),
-                None,
-                vec![],
-                None,
-                None,
+                sessions.asr.device().clone(),
+                sessions.asr.fallback_reason(),
             );
         }
         let result = operation(sessions);

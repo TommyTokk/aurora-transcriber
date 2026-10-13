@@ -167,13 +167,19 @@ Streaming checksum verification precedes native parsing. Metadata must identify
 `parakeet`, `tdt-0.6b-v3`, and a 16 kHz sample rate. Weights are CC-BY-4.0;
 attribute NVIDIA's original model and Handy's conversion when redistributing them.
 
-ASR defaults to **Auto, GPU only**: Metal on macOS Apple Silicon, CUDA then Vulkan
-on Windows/Linux. Auto tries registered GPUs in backend priority and registry order,
-releasing each failed attempt before the next. It never uses CPU ASR implicitly.
-An explicit GPU selection must initialize that exact native device or fail.
-**CPU · explicit opt-in** enables strict CPU ASR only when selected by the user;
-CPU is never a fallback for Auto or GPU selections. CPU decoding/resampling,
-Silero VAD and auxiliary native scheduler operations remain expected.
+ASR defaults to **Auto, GPU then CPU**: Metal on macOS Apple Silicon, CUDA then
+Vulkan on Windows/Linux. Auto tries registered GPUs in backend priority and registry
+order, releasing each failed attempt before the next, then attempts a registered CPU.
+Without compatible GPUs it goes directly to CPU. An explicit GPU choice tries that
+exact device, then CPU; it never substitutes another GPU. Explicit CPU skips GPUs.
+Recovery covers GPU unavailability, memory pressure and native model-load failures
+at initialization only. Invalid configuration, missing/corrupt resources, incompatible
+model contracts or native ABI/version, incompatible session limits and cancellation
+stop initialization. Invalid or expired GPU IDs are rejected before replacing weights.
+If CPU is absent or fails, initialization reports a safe recovery error. Inference
+failures do not automatically reload or repeat transcription.
+CPU decoding/resampling, Silero VAD and auxiliary native scheduler operations remain
+expected.
 
 The Models panel distinguishes the requested selection from the actual initialized
 backend/device. Choices apply immediately while model operations are idle, freeing
@@ -184,7 +190,13 @@ Auto on every app restart. Device IDs are opaque and valid only in the current
 process. Discovery reports the static native registry, not Cargo features; driver
 or device changes may require restarting the application.
 
-`TranscriberEngine::new(&Path)` retains GPU-only Auto behavior.
+`TranscriberEngine::new(&Path)` uses Auto with CPU recovery.
+`fallback_reason()` retains the recovery reason with resident weights. Snapshots expose
+nullable `fallbackReason` (`no_gpu`, `gpu_initialization_failed`, `gpu_out_of_memory`)
+only with an active engine. The panel shows a persistent notice while CPU recovery is
+active, distinguishing the requested GPU policy from actual CPU placement. Reload
+selection retries the requested policy. Diagnostics contain backend/error categories
+only, never native error text, model paths, audio or transcripts.
 `new_with_selection(&Path, &AsrSelection)` accepts `Auto {}`, `Cpu {}` or
 `Device { id }`. `discover_devices()` reports supported registered devices without
 loading weights. `device()` returns the verified hardware description and backend;
@@ -196,7 +208,7 @@ Import and the archive remain usable when ASR is unavailable.
 
 macOS enables static Metal by default; GPU ASR is supported on Apple Silicon.
 Intel macOS GPU ASR and other operating systems are unsupported by the application
-policy; CPU remains an explicit option wherever the native model can initialize.
+policy; CPU is attempted wherever the native model can initialize.
 Windows/Linux default builds have no GPU backend enabled. Enable the optional
 features when building on those systems:
 
@@ -267,6 +279,15 @@ cargo run --release --locked --example engine_probe
 
 The first check verifies loading and session recovery with empty inputs, including
 an error inside a file operation. The probe prints only readiness or safe errors.
+A separate offline CPU check simulates GPU initialization failure, then loads the
+verified local model and allocates real CPU sessions, without audio inference:
+
+```sh
+cargo test --workspace --locked --lib engine::transcriber::tests::cpu_recovery_loads_verified_native_sessions -- --ignored --exact
+```
+
+CPU-only startup, recoverable/terminal errors, candidate order, scoped cleanup and
+fallback snapshot lifecycle are also covered by ordinary simulated-loader tests.
 The application pipeline check downloads only missing/corrupt models into the
 explicitly supplied native profile and uses the first **at most ten seconds** of
 `audio_samples/audio.m4a`. It keeps audio and output in memory, saves no transcript,
@@ -292,7 +313,8 @@ cargo test --workspace --locked --lib transcription::smoke::milestone8_metal_pip
 
 Run this ignored test only with authorization for the first ten seconds of
 `audio_samples/audio.m4a`. It prints only a safe pass/fail summary. Ordinary tests
-use simulated GPU loaders and verify CPU opt-in policy without running CPU ASR.
+use simulated GPU/CPU loaders to verify initialization recovery, exact placement,
+terminal errors and scoped cleanup without running CPU ASR.
 The Metal pipeline and exact placement were verified on the available Apple Silicon
 Mac on 2026-10-11; no CPU ASR benchmarks or additional long audio runs were performed.
 
@@ -613,9 +635,9 @@ GPU CUDA/Vulkan features refer exclusively to transcribe.cpp ASR.
 
 The Models panel reports the actual ASR backend with transcribe.cpp and the
 independent `VAD: CPU (ONNX)` role. Explicit CPU ASR remains available, while
-Auto and explicit GPU selection keep their existing GPU-only policy. IPC shapes,
-model checksums, downloads, cancellation and joint 300-second idle unloading
-are unchanged. Legacy user-owned ONNX models remain on disk and are ignored;
+Auto and explicit GPU selection now recover to CPU during initialization. IPC
+snapshots add `fallbackReason`; model checksums, downloads, cancellation and joint
+300-second idle unloading are unchanged. Legacy user-owned ONNX models remain on disk and are ignored;
 no automatic cleanup or downloads were introduced.
 
 A lightweight local runtime test checks repeated initialization and rejects a

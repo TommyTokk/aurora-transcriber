@@ -15,7 +15,7 @@ mod transcriber;
 
 pub use manifest::{ModelDescriptor, ModelFormat, ModelPurpose};
 pub(crate) use providers::initialize as initialize_native;
-pub use providers::{discover_devices, AsrSelection, DeviceSnapshot, Provider};
+pub use providers::{discover_devices, AsrSelection, DeviceSnapshot, FallbackReason, Provider};
 pub use resources::REVISION as MODEL_REVISION;
 pub(crate) use state::start as state_start;
 pub use state::{transcriber_state, EngineSnapshot, EngineState};
@@ -40,7 +40,7 @@ pub enum EngineError {
     #[error("The transcription model returned invalid output.")]
     InvalidOutput,
     #[error(
-        "No compatible ASR GPU could be initialized. Check GPU drivers and build backends, select another GPU, or explicitly choose CPU."
+        "The requested ASR GPU could not be initialized. Check GPU drivers and build backends."
     )]
     GpuUnavailable,
     #[error("The selected ASR device is unavailable. Select an available device or Auto.")]
@@ -49,6 +49,14 @@ pub enum EngineError {
         "The ASR model could not be initialized. Check available memory and repair the models."
     )]
     ModelLoad,
+    #[error(
+        "The native ASR library is incompatible with this application. Repair the installation."
+    )]
+    NativeCompatibility,
+    #[error("No compatible ASR GPU could be initialized and no CPU device is registered.")]
+    CpuFallbackUnavailable,
+    #[error("Automatic CPU recovery failed: {0}")]
+    CpuFallbackFailed(#[source] Box<EngineError>),
     #[error("Local transcription failed. Check the selected device or retry.")]
     Inference,
     #[error("There is insufficient memory to run the local transcription model.")]
