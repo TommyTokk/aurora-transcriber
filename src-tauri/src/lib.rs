@@ -5,6 +5,7 @@ mod import;
 mod model_storage;
 mod playback;
 mod resources;
+pub mod settings;
 mod storage;
 pub mod transcription;
 pub mod vad;
@@ -28,6 +29,9 @@ pub fn run() -> anyhow::Result<()> {
             app.manage(model_storage::ModelStorage::new(
                 &app.path().app_data_dir()?,
             ));
+            app.manage(settings::TranscriptionSettings::new(
+                &app.path().app_data_dir()?,
+            ));
             engine::state_start(app.handle().clone());
             Ok(())
         })
@@ -43,6 +47,8 @@ pub fn run() -> anyhow::Result<()> {
             model_storage::choose_model_directory,
             model_storage::reset_model_directory,
             model_storage::open_model_directory,
+            settings::transcription_settings,
+            settings::set_transcription_language,
             transcription::process_audio_file,
             transcription::cancel_transcription,
             transcription::transcription_state,

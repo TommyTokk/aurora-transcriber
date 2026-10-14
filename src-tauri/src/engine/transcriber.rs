@@ -2,6 +2,7 @@
 use super::{
     providers, resources, AsrSelection, DeviceSnapshot, EngineError, FallbackReason, Provider,
 };
+use crate::settings::TranscriptionLanguage;
 use std::path::Path;
 use transcribe_cpp::{CancelToken, Feature, Model, RunOptions, Session, TimestampKind};
 
@@ -18,6 +19,7 @@ pub struct TranscriberEngine {
 /// Owns one file's native results and context; dropping it releases session resources.
 pub struct FileTranscriber {
     session: Session,
+    options: RunOptions,
 }
 
 impl TranscriberEngine {
@@ -102,9 +104,20 @@ impl TranscriberEngine {
         cancel: &CancelToken,
         operation: impl FnOnce(&mut FileTranscriber) -> T,
     ) -> Result<T, EngineError> {
+        self.with_file_cancellable_language(cancel, TranscriptionLanguage::Auto, operation)
+    }
+
+    /// Opens one cancellable file session with the same language hint for every chunk.
+    pub(crate) fn with_file_cancellable_language<T>(
+        &mut self,
+        cancel: &CancelToken,
+        language: TranscriptionLanguage,
+        operation: impl FnOnce(&mut FileTranscriber) -> T,
+    ) -> Result<T, EngineError> {
         providers::verify(&self.model, &self.options)?;
         let mut file = FileTranscriber {
             session: self.model.session().map_err(map_native_error)?,
+            options: run_options(language),
         };
         validate_session_limit(
             file.session
@@ -120,16 +133,34 @@ impl TranscriberEngine {
         Ok(result)
     }
 
+    /// Opens a scoped file session configured with an explicit source-language preference.
+    pub fn with_file_language<T>(
+        &mut self,
+        language: TranscriptionLanguage,
+        operation: impl FnOnce(&mut FileTranscriber) -> T,
+    ) -> Result<T, EngineError> {
+        self.with_file_cancellable_language(&CancelToken::new(), language, operation)
+    }
+
     /// Transcribes one standalone chunk and frees its native session before returning.
     ///
     /// Multi-chunk consumers use with_file to reuse a session. Empty or malformed
     /// audio is handled before allocating a session; weights are never reloaded here.
     pub fn transcribe_chunk(&mut self, samples: &[f32]) -> Result<String, EngineError> {
+        self.transcribe_chunk_language(samples, TranscriptionLanguage::Auto)
+    }
+
+    /// Transcribes a standalone chunk with a language hint without reloading resident weights.
+    pub fn transcribe_chunk_language(
+        &mut self,
+        samples: &[f32],
+        language: TranscriptionLanguage,
+    ) -> Result<String, EngineError> {
         validate_samples(samples)?;
         if samples.is_empty() {
             return Ok(String::new());
         }
-        self.with_file(|file| file.transcribe_chunk(samples))?
+        self.with_file_language(language, |file| file.transcribe_chunk(samples))?
     }
 }
 
@@ -150,15 +181,20 @@ impl FileTranscriber {
                 .map_err(map_native_error)?
                 .effective_max_audio_ms,
         )?;
-        let options = RunOptions {
-            timestamps: TimestampKind::None,
-            ..RunOptions::default()
-        };
         let result = self
             .session
-            .run(samples, &options)
+            .run(samples, &self.options)
             .map_err(map_native_error)?;
         Ok(result.text)
+    }
+}
+
+/// Builds transcription-only options once per file, preserving the selected hint across chunks.
+fn run_options(language: TranscriptionLanguage) -> RunOptions {
+    RunOptions {
+        language: language.hint().map(str::to_owned),
+        timestamps: TimestampKind::None,
+        ..RunOptions::default()
     }
 }
 

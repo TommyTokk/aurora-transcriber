@@ -1,4 +1,5 @@
 //! Single-job offline transcription with cooperative cancellation and recoverable snapshots.
+use crate::settings::{TranscriptionLanguage, TranscriptionSettings};
 use crate::{audio::AudioDecoder, engine::EngineState, import::ImportState};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
@@ -54,11 +55,12 @@ pub struct TranscriptionState(Mutex<Job>);
 struct Job {
     snapshot: TranscriptionSnapshot,
     active: bool,
+    language: TranscriptionLanguage,
     cancel: CancelToken,
 }
 impl TranscriptionState {
     /// Starts one job while rejecting duplicate commands before any audio work.
-    fn begin(&self, name: String) -> Result<String, String> {
+    fn begin(&self, name: String, language: TranscriptionLanguage) -> Result<String, String> {
         let mut job = self.0.lock().map_err(|_| "Transcription is unavailable.")?;
         if job.active {
             return Err("A transcription is already in progress.".into());
@@ -67,6 +69,7 @@ impl TranscriptionState {
         let revision = job.snapshot.revision + 1;
         *job = Job {
             active: true,
+            language,
             cancel: CancelToken::new(),
             snapshot: TranscriptionSnapshot {
                 job_id: Some(id.clone()),
@@ -78,6 +81,14 @@ impl TranscriptionState {
         };
         Ok(id)
     }
+    /// Reads the immutable source-language preference captured when the job began.
+    fn language(&self) -> Result<TranscriptionLanguage, String> {
+        self.0
+            .lock()
+            .map(|job| job.language)
+            .map_err(|_| "Transcription is unavailable.".into())
+    }
+
     /// Clones the current job's atomic handle without borrowing resident model sessions.
     fn cancel_token(&self) -> Result<CancelToken, String> {
         self.0
@@ -198,7 +209,7 @@ fn process_samples<R: tauri::Runtime>(
     // A scoped native session retains the token and releases partial results on every exit.
     sessions
         .asr
-        .with_file_cancellable(&cancel, |file| {
+        .with_file_cancellable_language(&cancel, job.language()?, |file| {
             chunks::transcribe(
                 &chunks,
                 &cancel,
@@ -217,13 +228,21 @@ fn process_samples<R: tauri::Runtime>(
     drop(chunks);
     Ok(())
 }
-/// Reserves an opaque native selection and starts one cancellable offline job.
+/// Starts an offline job with a file-only language override or the saved default captured at reservation.
 #[tauri::command]
 pub async fn process_audio_file(
     app: tauri::AppHandle,
     audio_id: String,
+    language: Option<TranscriptionLanguage>,
 ) -> Result<TranscriptionSnapshot, String> {
     app.state::<EngineState>().reserve()?;
+    let language = match app.state::<TranscriptionSettings>().language_for(language) {
+        Ok(language) => language,
+        Err(error) => {
+            app.state::<EngineState>().release();
+            return Err(error);
+        }
+    };
     let (path, name) = match app.state::<ImportState>().acquire(&app, &audio_id) {
         Ok(value) => value,
         Err(error) => {
@@ -231,7 +250,7 @@ pub async fn process_audio_file(
             return Err(error);
         }
     };
-    if let Err(error) = app.state::<TranscriptionState>().begin(name) {
+    if let Err(error) = app.state::<TranscriptionState>().begin(name, language) {
         app.state::<ImportState>().release(&app);
         app.state::<EngineState>().release();
         return Err(error);

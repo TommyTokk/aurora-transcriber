@@ -234,7 +234,10 @@ finite mono 16 kHz contract in `[-1, 1]`, at most 25 seconds, with empty input
 returning empty text. Standalone calls own a short-lived native session.
 `with_file` provides one scoped `FileTranscriber` session for a file's serial chunks,
 without reloading the resident weights. Every run uses offline transcription,
-no native timestamps, no language hint, and no cross-chunk prompt. Only text is
+no native timestamps and no cross-chunk prompt. Settings offers **Auto-detect**,
+**Italiano**, and **English**; the selected source-language hint is passed to every
+chunk as `None`, `"it"`, or `"en"`. The preference is captured at job start, and
+language changes are disabled until the job finishes. Only text is
 returned; source-relative subtitle boundaries continue to come from AURORA's VAD.
 
 Tauri owns the model and CPU VAD in `EngineState`. Construction, inference, idle
@@ -764,3 +767,31 @@ model download or legacy model cleanup was performed.
 Signing/notarization, Intel and older macOS execution, Windows/Linux and
 CUDA/Vulkan packaging remain unverified. A declared macOS 11.0 deployment target
 does not establish compatibility with older hardware or systems.
+
+### Transcription language preferences
+
+The source-language selection defaults to Auto-detect and is saved automatically
+in the application data directory's versioned `settings.json`, independently of
+model storage and session-only hardware preferences. Reopening AURORA restores
+the last successfully saved choice. Atomic saves preserve the previous preference
+on failure; an invalid or unreadable file activates Auto-detect with a warning
+until the user successfully saves a choice again. All preference operations are
+local and changing the language does not reload resident model weights.
+
+The native source-language parameter is a hint interpreted by the model, not a
+translation request or a guarantee that output is restricted to one language.
+Standalone engine APIs retain Auto-detect behavior; `with_file_language` and
+`transcribe_chunk_language` accept an explicit `TranscriptionLanguage`.
+
+The selected audio file card also offers **Transcription language** and **Use
+default**. Every new native import starts from the saved preference. Untouched
+files follow changes made in Settings; a file-specific choice remains fixed
+until **Use default**, removal, or replacement. Explicit Auto-detect is a local
+choice too. Navigation, retrying transcription, and cancelling the replacement
+picker preserve the choice for the same imported file. Overrides live only in
+memory and never change `settings.json` or saved transcript documents.
+
+`process_audio_file` accepts an optional `language` (`auto`, `it`, or `en`): an
+explicit value wins for that job; omission uses the saved default. The effective
+language is captured at job start for all chunks. The file language selector is
+disabled during import, transcription, and preference saves.
