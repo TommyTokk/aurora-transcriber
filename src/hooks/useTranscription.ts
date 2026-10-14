@@ -1,3 +1,4 @@
+import type { TranscriptionLanguage } from "../lib/settings";
 import { useEffect, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -147,14 +148,14 @@ export function useTranscription() {
     if (dirty) setConfirmAction(() => action);
     else action();
   }
-  /** Starts the selected native audio job after any unsaved-edit warning. */
-  function start(audioId: string) {
+  /** Starts the selected audio with an optional file-only language override after protecting unsaved edits. */
+  function start(audioId: string, language?: TranscriptionLanguage) {
     guard(() => {
       void perform(async () => {
         // The promise can complete after a newer event; accept only newer revisions.
         const result = await invoke<TranscriptionSnapshot>(
           "process_audio_file",
-          { audioId },
+          { audioId, language },
         );
         applyJob(result);
       });

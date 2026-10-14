@@ -782,3 +782,30 @@ progress {
     scroll-behavior: auto !important;
   }
 }
+
+.file-language-control {
+  flex-basis: 100%;
+  min-width: 0;
+  border: 0;
+  border-top: 1px solid var(--panel-border);
+  padding: 16px 0 0;
+  margin: 4px 0 0;
+}
+.file-language-choice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.file-language-choice label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.file-language-choice select {
+  width: auto;
+  max-width: 100%;
+}
+.file-language-control p {
+  margin: 10px 0 0;
+  font-size: 12px;
+}

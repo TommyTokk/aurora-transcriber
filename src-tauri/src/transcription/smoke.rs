@@ -62,7 +62,7 @@ fn run_metal_pipeline(source_env: &str, verify_archive_and_cancel: bool) -> anyh
         // Return the full-file allocation before inference; no extracted clip is written.
         samples.shrink_to_fit();
         let job = app.state::<TranscriptionState>();
-        job.begin("authorized clip".into())
+        job.begin("authorized clip".into(), TranscriptionLanguage::Auto)
             .map_err(anyhow::Error::msg)?;
         let result = state.with_sessions(app.handle(), |sessions| {
             process_samples(app.handle(), sessions, &samples)
@@ -193,7 +193,7 @@ fn verify_cancellation(
             Ok(())
         })
         .map_err(anyhow::Error::msg)?;
-    job.begin("cancelled clip".into())
+    job.begin("cancelled clip".into(), TranscriptionLanguage::Auto)
         .map_err(anyhow::Error::msg)?;
     let second = std::thread::scope(|scope| {
         let cancellation_app = app.handle().clone();

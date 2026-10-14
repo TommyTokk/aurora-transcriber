@@ -10,8 +10,10 @@ fn app() -> tauri::App<tauri::test::MockRuntime> {
 fn jobs_are_exclusive_and_cancellation_is_scoped() -> Result<(), String> {
     let app = app();
     let state = TranscriptionState::default();
-    let first = state.begin("voice.wav".into())?;
-    assert!(state.begin("other.wav".into()).is_err());
+    let first = state.begin("voice.wav".into(), TranscriptionLanguage::Auto)?;
+    assert!(state
+        .begin("other.wav".into(), TranscriptionLanguage::Auto)
+        .is_err());
     state.update(app.handle(), |s| {
         s.segments.push(SubtitleSegment {
             start_sec: 0.0,
@@ -28,7 +30,7 @@ fn jobs_are_exclusive_and_cancellation_is_scoped() -> Result<(), String> {
     let cancelled = state.snapshot()?;
     assert_eq!(cancelled.phase, TranscriptionPhase::Cancelled);
     assert!(cancelled.segments.is_empty());
-    let second = state.begin("other.wav".into())?;
+    let second = state.begin("other.wav".into(), TranscriptionLanguage::Auto)?;
     assert_ne!(first, second);
     state.check()?;
     state.finish(app.handle(), Err("Safe failure.".into()));
@@ -43,7 +45,7 @@ fn empty_completion_has_no_partial_results() -> Result<(), String> {
     let app = app();
     let state = TranscriptionState::default();
     assert!(state.snapshot()?.phase == TranscriptionPhase::Idle);
-    state.begin("silence.wav".into())?;
+    state.begin("silence.wav".into(), TranscriptionLanguage::Auto)?;
     state.finish(app.handle(), Ok(()));
     assert_eq!(state.snapshot()?.phase, TranscriptionPhase::Completed);
     assert_eq!(state.snapshot()?.percentage, Some(100.0));
@@ -73,7 +75,8 @@ fn milestone7_metal_pipeline() -> anyhow::Result<()> {
         // Reallocation releases the original full-file buffer before ASR processing.
         samples.shrink_to_fit();
         let job = app.state::<TranscriptionState>();
-        job.begin("audio.m4a".into()).map_err(anyhow::Error::msg)?;
+        job.begin("audio.m4a".into(), TranscriptionLanguage::Auto)
+            .map_err(anyhow::Error::msg)?;
         let result = engine.with_sessions(app.handle(), |sessions| {
             process_samples(app.handle(), sessions, &samples)
         });
@@ -146,7 +149,7 @@ fn milestone7_metal_pipeline() -> anyhow::Result<()> {
 fn many_chunks_preserve_source_time_and_order() -> Result<(), String> {
     let app = app();
     let state = TranscriptionState::default();
-    state.begin("long.wav".into())?;
+    state.begin("long.wav".into(), TranscriptionLanguage::Auto)?;
     let samples = [0.0; 16];
     let chunks: Vec<_> = (0..200)
         .map(|i| crate::vad::AudioChunk {
@@ -194,7 +197,7 @@ fn chunk_cancellation_discards_results_and_allows_next_job() -> Result<(), Strin
         })
         .collect();
     for scenario in 0..5 {
-        state.begin("sample.wav".into())?;
+        state.begin("sample.wav".into(), TranscriptionLanguage::Auto)?;
         let cancel = state.cancel_token()?;
         let mut calls = 0;
         if scenario == 0 {
@@ -234,7 +237,7 @@ fn chunk_cancellation_discards_results_and_allows_next_job() -> Result<(), Strin
         );
         assert_eq!(calls, [0, 1, 1, 3, 2][scenario]);
     }
-    state.begin("silence.wav".into())?;
+    state.begin("silence.wav".into(), TranscriptionLanguage::Auto)?;
     assert!(!state.cancel_token()?.is_cancelled());
     let result = chunks::transcribe(
         &[],
@@ -252,7 +255,7 @@ fn chunk_cancellation_discards_results_and_allows_next_job() -> Result<(), Strin
 fn native_abort_is_terminal_cancellation() -> Result<(), String> {
     let app = app();
     let state = TranscriptionState::default();
-    state.begin("clip.wav".into())?;
+    state.begin("clip.wav".into(), TranscriptionLanguage::Auto)?;
     let samples = [0.0];
     let chunk = crate::vad::AudioChunk {
         samples: &samples,
@@ -320,5 +323,54 @@ fn cancellation_reaches_inflight_worker_and_releases_scope() -> anyhow::Result<(
         .map_err(|_| anyhow::anyhow!("Simulated worker failed"))?;
     assert!(result.is_err());
     assert_eq!(released.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+/// Progress, cancellation, and rejected duplicate jobs cannot change the captured language.
+#[test]
+fn job_language_is_fixed_until_the_next_job() -> Result<(), String> {
+    let app = app();
+    let state = TranscriptionState::default();
+    for language in [
+        TranscriptionLanguage::Italian,
+        TranscriptionLanguage::English,
+        TranscriptionLanguage::Auto,
+    ] {
+        state.begin("clip.wav".into(), language)?;
+        assert!(state
+            .begin("other.wav".into(), TranscriptionLanguage::Auto)
+            .is_err());
+        let samples = [0.0; 16];
+        let chunks: Vec<_> = (0..3)
+            .map(|index| crate::vad::AudioChunk {
+                samples: &samples,
+                start_sec: index as f64,
+                end_sec: index as f64 + 1.0,
+            })
+            .collect();
+        let mut hints = Vec::new();
+        chunks::transcribe(
+            &chunks,
+            &state.cancel_token()?,
+            |_| {
+                let captured = state
+                    .language()
+                    .map_err(|_| crate::engine::EngineError::Unavailable)?;
+                hints.push(captured.hint());
+                Ok("test".into())
+            },
+            |index, segment| {
+                state.update(app.handle(), |snapshot| {
+                    snapshot.current_chunk = index;
+                    snapshot.segments.push(segment);
+                })
+            },
+        )?;
+        assert_eq!(hints, vec![language.hint(); 3]);
+        state.cancel_token()?.cancel();
+        state.finish(app.handle(), Ok(()));
+        assert_eq!(state.snapshot()?.phase, TranscriptionPhase::Cancelled);
+        assert_eq!(state.language()?, language);
+    }
     Ok(())
 }

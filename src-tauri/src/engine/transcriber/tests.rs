@@ -142,3 +142,20 @@ fn cpu_recovery_loads_verified_native_sessions() -> anyhow::Result<()> {
     assert_eq!(engine.provider(), Provider::Cpu);
     Ok(())
 }
+
+/// Language hints retain transcription task, disabled timestamps, and no translation target.
+#[test]
+fn language_options_preserve_offline_transcription_contract() {
+    for (language, hint) in [
+        (TranscriptionLanguage::Auto, None),
+        (TranscriptionLanguage::Italian, Some("it")),
+        (TranscriptionLanguage::English, Some("en")),
+    ] {
+        let options = run_options(language);
+        assert_eq!(options.language.as_deref(), hint);
+        assert_eq!(options.task, transcribe_cpp::Task::Transcribe);
+        assert_eq!(options.timestamps, TimestampKind::None);
+        assert!(options.target_language.is_none());
+        assert!(options.family.is_none());
+    }
+}

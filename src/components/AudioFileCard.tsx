@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Check, FileAudio, RefreshCw, X } from "lucide-react";
 import {
   formatDuration,
@@ -6,6 +7,7 @@ import {
 } from "../lib/audioImport";
 interface AudioFileCardProps {
   file: AudioMetadata;
+  children?: ReactNode;
   busy: boolean;
   onReplace: () => Promise<void>;
   onRemove: () => Promise<void>;
@@ -13,6 +15,7 @@ interface AudioFileCardProps {
 /** Displays validated metadata and accessible replace and remove controls. */
 export function AudioFileCard({
   file,
+  children,
   busy,
   onReplace,
   onRemove,
@@ -55,6 +58,7 @@ export function AudioFileCard({
           <X size={19} />
         </button>
       </div>
+      {children}
     </section>
   );
 }

@@ -21,6 +21,10 @@ import { TranscriptActions } from "./components/TranscriptActions";
 import { TranscriptArchive } from "./components/TranscriptArchive";
 import { Models } from "./components/Models";
 import { AsrDeviceControl } from "./components/AsrDeviceControl";
+import { useTranscriptionSettings } from "./hooks/useTranscriptionSettings";
+import { TranscriptionLanguageControl } from "./components/TranscriptionLanguageControl";
+import { useFileTranscriptionLanguage } from "./hooks/useFileTranscriptionLanguage";
+import { FileTranscriptionLanguageControl } from "./components/FileTranscriptionLanguageControl";
 import { UnsavedDialog } from "./components/UnsavedDialog";
 
 type View = "studio" | "archive" | "models" | "settings";
@@ -55,7 +59,8 @@ const headings: Record<
   settings: {
     title: "Application Settings",
     eyebrow: "ENGINE CONFIGURATION",
-    description: "Choose how your device powers speech transcription.",
+    description:
+      "Choose the audio language and how your device powers speech transcription.",
   },
 };
 /** Keeps the local workspace state alive while switching between application pages. */
@@ -64,6 +69,11 @@ export default function App() {
   const audio = useAudioImport();
   const transcription = useTranscription();
   const folder = useModelStorage();
+  const language = useTranscriptionSettings();
+  const fileLanguage = useFileTranscriptionLanguage(
+    audio.update.audioId,
+    language.settings?.language ?? "auto",
+  );
   const player = useTranscriptPlayback(
     transcription.audioId,
     transcription.audioAvailable,
@@ -71,6 +81,7 @@ export default function App() {
   const disabled =
     !audio.native ||
     transcription.pending ||
+    language.pending ||
     transcription.associating ||
     !transcription.connected;
   const error =
@@ -195,7 +206,20 @@ export default function App() {
                   busy={audio.busy}
                   onReplace={audio.chooseFile}
                   onRemove={audio.removeFile}
-                />
+                >
+                  <FileTranscriptionLanguageControl
+                    language={fileLanguage.language}
+                    usesDefault={fileLanguage.usesDefault}
+                    disabled={
+                      disabled ||
+                      audio.busy ||
+                      transcription.active ||
+                      !language.settings
+                    }
+                    onSelect={fileLanguage.selectLanguage}
+                    onUseDefault={fileLanguage.useDefault}
+                  />
+                </AudioFileCard>
               )}
               <DropZone
                 dragging={audio.dragging}
@@ -215,7 +239,10 @@ export default function App() {
                 disabled={disabled}
                 onStart={() => {
                   if (audio.update.audioId)
-                    transcription.start(audio.update.audioId);
+                    transcription.start(
+                      audio.update.audioId,
+                      fileLanguage.override,
+                    );
                 }}
                 onCancel={() => void transcription.cancel()}
               />
@@ -265,6 +292,18 @@ export default function App() {
             />
           </div>
           <div hidden={view !== "settings"} className="settings-content">
+            <TranscriptionLanguageControl
+              settings={language.settings}
+              pending={language.pending}
+              error={language.error}
+              disabled={
+                disabled ||
+                transcription.active ||
+                folder.pending ||
+                ["loading", "downloading"].includes(model.phase)
+              }
+              onSelect={language.selectLanguage}
+            />
             <section className="panel">
               <div className="section-heading">
                 <Settings size={21} />
