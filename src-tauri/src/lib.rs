@@ -54,7 +54,8 @@ pub fn run() -> anyhow::Result<()> {
             storage::open_transcript,
             export::export_subtitles
         ])
-        .on_webview_event(import::handle_drag_drop)
+        // Tauri routes drops on the main window's content through window events.
+        .on_window_event(import::handle_drag_drop)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(

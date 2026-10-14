@@ -3,7 +3,7 @@
 use std::{path::Path, sync::Mutex};
 
 use serde::Serialize;
-use tauri::{AppHandle, DragDropEvent, Emitter, Manager, State, Webview, WebviewEvent};
+use tauri::{AppHandle, DragDropEvent, Emitter, Manager, Runtime, State, Window, WindowEvent};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::audio::{AudioDecoder, TARGET_SAMPLE_RATE};
@@ -108,7 +108,7 @@ impl ImportState {
     }
 
     /// Reserves the importer so dialogs and native drops cannot overlap.
-    fn begin(&self, app: &AppHandle, phase: ImportPhase) -> Result<(), String> {
+    fn begin<R: Runtime>(&self, app: &AppHandle<R>, phase: ImportPhase) -> Result<(), String> {
         let mut current = self.0.lock().map_err(|_| "Audio import is unavailable.")?;
         current.begin(phase)?;
         let _ = app.emit_to("main", IMPORT_EVENT, &*current);
@@ -116,7 +116,7 @@ impl ImportState {
     }
 
     /// Stores and emits an ordered snapshot without logging sensitive data.
-    fn publish(&self, app: &AppHandle, update: ImportUpdate) {
+    fn publish<R: Runtime>(&self, app: &AppHandle<R>, update: ImportUpdate) {
         if let Ok(mut current) = self.0.lock() {
             *current = update;
             let _ = app.emit_to("main", IMPORT_EVENT, &*current);
@@ -158,7 +158,7 @@ fn inspect_audio(path: &Path) -> Result<AudioMetadata, String> {
 }
 
 /// Runs synchronous decoding away from the UI thread and reports its outcome.
-async fn validate(app: AppHandle, path: std::path::PathBuf) {
+async fn validate<R: Runtime>(app: AppHandle<R>, path: std::path::PathBuf) {
     app.state::<ImportState>().publish(
         &app,
         ImportUpdate {
@@ -259,15 +259,15 @@ pub fn clear_audio_file(app: AppHandle, state: State<'_, ImportState>) -> Result
     Ok(())
 }
 
-/// Imports only OS-provided drop paths and reports drag feedback separately.
-pub fn handle_drag_drop(webview: &Webview, event: &WebviewEvent) {
-    if webview.label() != "main" {
+/// Handles main-window drag feedback and validates only OS-provided drop paths.
+pub fn handle_drag_drop<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
+    if window.label() != "main" {
         return;
     }
-    let WebviewEvent::DragDrop(event) = event else {
+    let WindowEvent::DragDrop(event) = event else {
         return;
     };
-    let app = webview.app_handle();
+    let app = window.app_handle();
     match event {
         DragDropEvent::Enter { .. } => {
             let _ = app.emit_to("main", "audio-drag", true);
@@ -278,6 +278,7 @@ pub fn handle_drag_drop(webview: &Webview, event: &WebviewEvent) {
         DragDropEvent::Drop { paths, .. } => {
             let _ = app.emit_to("main", "audio-drag", false);
             let state = app.state::<ImportState>();
+            // Reserve synchronously before spawning so concurrent drops cannot overlap.
             if state.begin(app, ImportPhase::Validating).is_err() {
                 return;
             }
@@ -301,3 +302,6 @@ pub fn handle_drag_drop(webview: &Webview, event: &WebviewEvent) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod drag_drop_tests;
