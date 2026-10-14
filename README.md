@@ -34,8 +34,10 @@ models** to provision the supported ASR and VAD files. All transcription runs of
 ASR weights and the CPU VAD session remain resident until more than five idle minutes.
 Each file gets a scoped ASR session on the selected device, released on completion, cancellation, or failure.
 The bundled desktop icon uses the supplied artwork, preserved in
-`src-tauri/icons/source.svg`. Regenerate the icons with Tauri's `icon` command
-using `--fit cover` to preserve proportions while cropping to a square.
+`src-tauri/icons/source.svg`. Its square viewBox tightly encloses the artwork,
+preserving proportions and rounded transparent corners without excess padding.
+Regenerate the desktop icons with
+`npm run tauri -- icon src-tauri/icons/source.svg --output src-tauri/icons`.
 
 The Luminous workspace opens at 1280 × 800 with three views: **Transcription
 Studio**, **AI Models**, and **Settings**. Studio groups audio import, job controls
