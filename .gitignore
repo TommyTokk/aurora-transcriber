@@ -34,3 +34,25 @@ plan.md
 audio_samples/
 models/
 transcripts/
+plans/
+
+# Local metadata and credentials (keep sanitized examples shareable)
+.DS_Store
+._*
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+.aws/
+.ssh/
+.netrc
+.npmrc
+.pypirc
+credentials.json
+service-account*.json

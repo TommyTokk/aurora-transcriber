@@ -56,17 +56,16 @@ fn ranges_preserve_resampler_delay_and_partial_tail() -> anyhow::Result<()> {
 }
 
 #[test]
-fn short_repository_samples_have_matching_review_audio() -> anyhow::Result<()> {
-    // Explicitly exclude audio_samples/long; only the two short source samples are used.
-    for name in ["audio.m4a", "audio_2.m4a"] {
+fn synthetic_fixtures_have_matching_duration_and_review_audio() -> anyhow::Result<()> {
+    for name in ["tone.wav", "tone.m4a"] {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../audio_samples")
+            .join("tests/fixtures")
             .join(name);
         let full = AudioDecoder::decode_to_16khz_mono(&path)?;
-        assert!(full.len() < 5 * 60 * 16000, "sample must remain short");
+        assert!(full.len() >= 3000, "fixture must cover the review ranges");
         let duration = AudioDecoder::duration_seconds(&path)?;
         assert_eq!(duration, full.len() as f64 / 16000.0);
-        for range in [0..16000, 3 * 16000..6 * 16000] {
+        for range in [0..1000, 1500..3000, full.len() - 100..full.len()] {
             assert_eq!(
                 AudioDecoder::decode_range(&path, range.clone(), || false)?,
                 full[range]
