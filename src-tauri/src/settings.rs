@@ -1,5 +1,5 @@
 //! Local, atomic transcription preferences independent of model residency.
-use crate::engine::EngineState;
+use crate::engine::{AsrModelId, EngineState};
 use serde::{Deserialize, Serialize};
 use std::{
     io::Write,
@@ -8,9 +8,9 @@ use std::{
 };
 use tauri::{Manager, State};
 
-const READ_WARNING: &str = "Language settings could not be read. Auto-detect is active. Select a language to save your preference again.";
+const READ_WARNING: &str = "Transcription settings could not be read. Auto-detect and Parakeet are active. Select a language to save your preference again.";
 const SAVE_ERROR: &str =
-    "Unable to save transcription language. Your previous preference is still active.";
+    "Unable to save transcription settings. Your previous preference is still active.";
 
 /// Supported source-language hints; Auto leaves language handling to the model.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +40,8 @@ impl TranscriptionLanguage {
 struct Configuration {
     version: u32,
     language: TranscriptionLanguage,
+    #[serde(default)]
+    selected_model: Option<AsrModelId>,
 }
 
 /// Effective preference and a recoverable configuration warning for the UI.
@@ -47,6 +49,7 @@ struct Configuration {
 #[serde(rename_all = "camelCase")]
 pub struct SettingsSnapshot {
     pub language: TranscriptionLanguage,
+    pub selected_model: AsrModelId,
     pub warning: Option<String>,
 }
 
@@ -59,25 +62,34 @@ impl TranscriptionSettings {
     /// Restores a valid preference or reports a read failure with Auto-detect fallback.
     pub fn new(base: &Path) -> Self {
         let configuration = base.join("settings.json");
-        let result = (|| -> anyhow::Result<TranscriptionLanguage> {
+        let result = (|| -> anyhow::Result<(TranscriptionLanguage, AsrModelId)> {
             let file = match std::fs::File::open(&configuration) {
                 Ok(file) => file,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    return Ok(TranscriptionLanguage::Auto)
+                    return Ok((TranscriptionLanguage::Auto, AsrModelId::default()))
                 }
                 Err(error) => return Err(error.into()),
             };
             let value: Configuration = serde_json::from_reader(file)?;
-            anyhow::ensure!(value.version == 1, "Unsupported settings version");
-            Ok(value.language)
+            anyhow::ensure!(
+                value.version == 1 || value.version == 2,
+                "Unsupported settings version"
+            );
+            anyhow::ensure!(
+                value.version == 1 || value.selected_model.is_some(),
+                "Missing model preference"
+            );
+            Ok((value.language, value.selected_model.unwrap_or_default()))
         })();
         let value = match result {
-            Ok(language) => SettingsSnapshot {
+            Ok((language, selected_model)) => SettingsSnapshot {
                 language,
+                selected_model,
                 warning: None,
             },
             Err(_) => SettingsSnapshot {
                 language: TranscriptionLanguage::Auto,
+                selected_model: AsrModelId::default(),
                 warning: Some(READ_WARNING.into()),
             },
         };
@@ -108,14 +120,31 @@ impl TranscriptionSettings {
 
     /// Commits an atomic replacement before updating the effective in-memory preference.
     fn save(&self, language: TranscriptionLanguage) -> Result<SettingsSnapshot, String> {
+        self.save_preferences(Some(language), None)
+    }
+
+    /// Persists the chosen ASR while preserving the current source-language preference.
+    pub(crate) fn save_model(&self, model: AsrModelId) -> Result<SettingsSnapshot, String> {
+        self.save_preferences(None, Some(model))
+    }
+
+    /// Commits both preferences under one lock; failed writes preserve disk and live state.
+    fn save_preferences(
+        &self,
+        language: Option<TranscriptionLanguage>,
+        model: Option<AsrModelId>,
+    ) -> Result<SettingsSnapshot, String> {
         let mut value = self.value.lock().map_err(|_| SAVE_ERROR)?;
+        let language = language.unwrap_or(value.language);
+        let selected_model = model.unwrap_or(value.selected_model);
         let parent = self.configuration.parent().ok_or(SAVE_ERROR)?;
         let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|_| SAVE_ERROR)?;
         serde_json::to_writer(
             &mut temporary,
             &Configuration {
-                version: 1,
+                version: 2,
                 language,
+                selected_model: Some(selected_model),
             },
         )
         .map_err(|_| SAVE_ERROR)?;
@@ -127,6 +156,7 @@ impl TranscriptionSettings {
             .map_err(|_| SAVE_ERROR)?;
         *value = SettingsSnapshot {
             language,
+            selected_model,
             warning: None,
         };
         Ok(value.clone())

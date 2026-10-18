@@ -6,3 +6,10 @@ Parakeet TDT 0.6B v3 weights: NVIDIA, CC-BY-4.0; GGUF conversion by Handy.
 Source: https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v3-gguf
 Pinned conversion revision: 90f082450fcbacdb54e5900c44ef697c9ea59622.
 Models are downloaded separately through the explicit application action.
+
+Whisper large-v3-turbo weights: OpenAI, MIT; GGUF conversion by Handy.
+Source: https://huggingface.co/handy-computer/whisper-large-v3-turbo-gguf
+Pinned conversion revision: 18ada752005f5fddef499256f9a458d0b37a203a.
+Artifact: whisper-large-v3-turbo-Q8_0.gguf (886381728 bytes).
+SHA-256: 257aa7ec9121c22c167d5e2c49e3e76b4ba0e6e27ebc13074eba0a80f8190220.
+Whisper's original license is included in WHISPER-LICENSE.txt.

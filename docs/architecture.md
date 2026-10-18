@@ -30,19 +30,39 @@ file and chunk limits. These inference chunks differ from editor review blocks.
 
 ## Models and runtime lifecycle
 
-Required artifacts are declared centrally in the backend model manifest:
+Available artifacts are declared centrally in the backend model manifest. Only the selected ASR and shared VAD are required:
 
-| Role | Artifact                       | Source                                                     |
-| ---- | ------------------------------ | ---------------------------------------------------------- |
-| ASR  | Parakeet TDT 0.6B v3 Q8_0 GGUF | `handy-computer/parakeet-tdt-0.6b-v3-gguf` on Hugging Face |
-| VAD  | Silero v5.1 ONNX               | `Derur/silero-models` on Hugging Face                      |
+| Role | Artifact                         | Source                                                       |
+| ---- | -------------------------------- | ------------------------------------------------------------ |
+| ASR  | Parakeet TDT 0.6B v3 Q8_0 GGUF   | `handy-computer/parakeet-tdt-0.6b-v3-gguf` on Hugging Face   |
+| ASR  | Whisper large-v3-turbo Q8_0 GGUF | `handy-computer/whisper-large-v3-turbo-gguf` on Hugging Face |
+| VAD  | Silero v5.1 ONNX                 | `Derur/silero-models` on Hugging Face                        |
 
 Parakeet uses revision `90f082450fcbacdb54e5900c44ef697c9ea59622` and the
 739,508,576-byte `parakeet-tdt-0.6b-v3-Q8_0.gguf` artifact. SHA-256 digests in the
-manifest pin both model contents. Downloading is explicit, disables Hugging Face
+manifest pin every artifact. Whisper Turbo uses revision
+`18ada752005f5fddef499256f9a458d0b37a203a`, size 886,381,728 bytes and SHA-256
+`257aa7ec9121c22c167d5e2c49e3e76b4ba0e6e27ebc13074eba0a80f8190220`. Downloading is explicit, disables Hugging Face
 authentication tokens, verifies files and atomically promotes staged copies.
 Valid local files are reused. A `.download-cache/` inside the selected model
-folder supports transfers and is removed after successful provisioning.
+folder supports transfers; only requested repository caches are removed after
+successful provisioning. A model-specific download repairs that ASR and shared
+Silero; downloading Silero alone never downloads an ASR.
+
+`select_asr_model(modelId)`, `download_model(modelId)` and `delete_model(modelId)`
+accept catalog identities only. Selection persists before an offline reload and may
+refer to an absent model. `EngineSnapshot.selectedModel` identifies the selected
+ASR, `installed` lists present artifact IDs, and descriptors include `sizeBytes`.
+Presence does not imply integrity: readiness requires checksum and native contract
+validation. Catalog status and device diagnostics use the same monotonic revision.
+
+Deletion is confirmed in a focus-trapping dialog, then uses the native reservation
+shared by downloads, folder changes and transcription. Required sessions are
+released on a worker before removing the exact artifact and its repository cache.
+The selected ASR remains unchanged when deleted. Removing Silero blocks both ASRs.
+Deleting an inactive ASR leaves resident sessions intact. Descendant symlinks are
+rejected; unrelated files, other ASRs and other folders remain untouched. Filesystem
+errors are recoverable and partial cache cleanup failures are reported.
 
 Resident ASR weights and the VAD session are managed through Tauri state.
 Each file gets a scoped native ASR session, released on completion, failure or
@@ -59,7 +79,8 @@ invalid configuration and cancellation stop initialization. Inference failures
 do not automatically repeat transcription. Requested device preferences last
 only for the current process; device IDs are opaque and process-local.
 
-`TranscriberEngine::new(&Path)` uses Auto; `new_with_selection` accepts `AsrSelection`.
+`TranscriberEngine::new(&Path)` uses Auto; `new_with_selection` accepts `AsrSelection`; both retain Parakeet compatibility.
+`new_with_model` accepts `AsrModelId` and `AsrSelection` for catalog-specific loading.
 `transcribe_chunk` accepts finite mono 16 kHz samples, at most 25 seconds, and
 returns empty text for empty input. `with_file` provides scoped session reuse;
 language-aware APIs accept `TranscriptionLanguage` (`auto`, `it`, `en`).
@@ -97,10 +118,11 @@ Tauri resolves the per-user application data directory. It contains:
 
 ```text
 com.aurora.desktop/
-├── settings.json          # Versioned source-language preference
+├── settings.json          # Versioned language and selected ASR preferences
 ├── model-storage.json     # Versioned selected model directory
 ├── models/                # Default model destination
 │   ├── parakeet/
+│   ├── whisper/
 │   └── silero_vad.onnx
 └── transcripts/
     └── <uuid>.json         # Explicitly saved transcript documents
@@ -111,8 +133,10 @@ validates access but does not move or delete files. Unavailable custom folders
 remain selected and report a recoverable error. Model loading, downloading,
 transcription and folder changes share native operation reservations.
 
-Settings saves are atomic and independent of model storage. Invalid settings
-activate Auto-detect with a warning. Per-file overrides remain in memory;
+Settings saves are atomic and independent of model storage. Settings v2 stores
+`selectedModel` alongside `language`; v1 restores Parakeet while preserving the
+saved language, and migrates on the next explicit save. Changing either preference
+preserves the other. Invalid settings activate Auto-detect and Parakeet with a warning. Per-file overrides remain in memory;
 untouched imports follow preference updates. Job start captures the effective
 language for all chunks. A source-language hint is not a translation request.
 
@@ -131,4 +155,6 @@ are the explicit network operation; fonts are bundled locally.
 
 Third-party notices are stored with runtime resources and fonts. Parakeet weights
 are distributed separately under CC-BY-4.0; attribute NVIDIA's original model and
-Handy's conversion when redistributing them. No project-level license is declared.
+Handy's conversion when redistributing them. Whisper Turbo weights are MIT licensed,
+with OpenAI attribution and Handy conversion provenance in the bundled notices.
+No project-level license is declared.

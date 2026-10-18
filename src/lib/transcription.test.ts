@@ -35,6 +35,8 @@ test("model snapshots reject stale device reads and duplicate events", () => {
   const current = {
     ...EMPTY_MODEL,
     revision: 5,
+    selectedModel: "whisper-large-v3-turbo" as const,
+    installed: ["whisper-large-v3-turbo", "silero-vad-v5.1"],
     selection: { mode: "cpu" as const },
   };
   assert.equal(
@@ -82,6 +84,7 @@ test("model labels distinguish GGUF ASR from CPU ONNX VAD", () => {
       purpose: "ASR",
       format: "GGUF",
       quantization: "Q8_0",
+      sizeBytes: 739508576,
     }),
     "Parakeet TDT 0.6B v3 — ASR · GGUF · Q8_0",
   );
@@ -93,6 +96,7 @@ test("model labels distinguish GGUF ASR from CPU ONNX VAD", () => {
       purpose: "VAD",
       format: "ONNX",
       quantization: null,
+      sizeBytes: 2327524,
     }),
     "Silero v5.1 — VAD · ONNX · CPU",
   );

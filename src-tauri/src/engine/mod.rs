@@ -1,4 +1,4 @@
-//! Offline Parakeet GGUF inference with explicit devices and per-file sessions.
+//! Offline selectable GGUF inference with explicit devices and per-file sessions.
 
 #[cfg(all(
     any(feature = "asr-cuda", feature = "asr-vulkan"),
@@ -7,13 +7,15 @@
 compile_error!("ASR CUDA/Vulkan features are supported only on Windows/Linux.");
 
 pub(crate) mod fetcher;
+pub(crate) mod management;
 pub(crate) mod manifest;
+mod model_files;
 mod providers;
 pub(crate) mod resources;
 pub(crate) mod state;
 mod transcriber;
 
-pub use manifest::{ModelDescriptor, ModelFormat, ModelPurpose};
+pub use manifest::{AsrModelId, ModelDescriptor, ModelFormat, ModelPurpose};
 pub(crate) use providers::initialize as initialize_native;
 pub use providers::{discover_devices, AsrSelection, DeviceSnapshot, FallbackReason, Provider};
 pub use resources::REVISION as MODEL_REVISION;
@@ -33,7 +35,7 @@ pub enum EngineError {
     Configuration,
     #[error("Local model verification failed. Download models to repair the installation.")]
     Resources,
-    #[error("The GGUF model does not match the supported Parakeet TDT v3 contract.")]
+    #[error("The GGUF model does not match the selected ASR contract.")]
     ModelContract,
     #[error("Audio must be finite mono 16 kHz samples within [-1, 1], at most 25 seconds.")]
     InvalidSamples,

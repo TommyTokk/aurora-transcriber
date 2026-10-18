@@ -30,6 +30,8 @@ export interface AsrDevice {
   name: string;
   description: string;
 }
+/** Stable ASR choices accepted by native model selection. */
+export type AsrModelId = "parakeet-tdt-0.6b-v3" | "whisper-large-v3-turbo";
 /** Public model identity; provisioning details and native paths remain in Rust. */
 export interface ModelDescriptor {
   id: string;
@@ -38,6 +40,7 @@ export interface ModelDescriptor {
   purpose: "ASR" | "VAD";
   format: "GGUF" | "ONNX";
   quantization: string | null;
+  sizeBytes: number;
 }
 /** Formats model identity and the CPU-only VAD role for the Models panel. */
 export function modelLabel(model: ModelDescriptor): string {
@@ -47,6 +50,8 @@ export function modelLabel(model: ModelDescriptor): string {
 /** Ordered, path-free model residency, device selection and download status. */
 export interface ModelSnapshot {
   models: ModelDescriptor[];
+  selectedModel: AsrModelId;
+  installed: string[];
   revision: number;
   selection: AsrSelection;
   devices: AsrDevice[];
@@ -116,6 +121,8 @@ export const EMPTY_JOB: TranscriptionSnapshot = {
 };
 export const EMPTY_MODEL: ModelSnapshot = {
   models: [],
+  selectedModel: "parakeet-tdt-0.6b-v3",
+  installed: [],
   revision: -1,
   selection: { mode: "auto" },
   devices: [],

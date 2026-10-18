@@ -34,6 +34,8 @@ fn invalid_configuration_is_recoverable() -> anyhow::Result<()> {
         "{",
         r#"{"version":1,"language":"fr"}"#,
         r#"{"version":2,"language":"it"}"#,
+        r#"{"version":3,"language":"it","selectedModel":"whisper-large-v3-turbo"}"#,
+        r#"{"version":2,"language":"it","selectedModel":"unknown"}"#,
         r#"{"version":1}"#,
     ] {
         std::fs::write(&path, contents)?;
@@ -195,5 +197,64 @@ fn file_language_overrides_do_not_modify_settings() -> anyhow::Result<()> {
         serde_json::from_str::<Option<TranscriptionLanguage>>("null")?,
         None
     );
+    Ok(())
+}
+
+/// Legacy language settings acquire a default ASR and migrate atomically on the next explicit save.
+#[test]
+fn model_selection_migrates_and_preserves_language() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("settings.json");
+    std::fs::write(&path, r#"{"version":1,"language":"it"}"#)?;
+    let settings = TranscriptionSettings::new(dir.path());
+    assert_eq!(
+        settings
+            .snapshot()
+            .map_err(anyhow::Error::msg)?
+            .selected_model,
+        AsrModelId::Parakeet
+    );
+    settings
+        .save_model(AsrModelId::WhisperTurbo)
+        .map_err(anyhow::Error::msg)?;
+    let restored = TranscriptionSettings::new(dir.path())
+        .snapshot()
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(restored.language, TranscriptionLanguage::Italian);
+    assert_eq!(restored.selected_model, AsrModelId::WhisperTurbo);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(&path)?)?["version"],
+        2
+    );
+    settings
+        .save(TranscriptionLanguage::English)
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(
+        TranscriptionSettings::new(dir.path())
+            .snapshot()
+            .map_err(anyhow::Error::msg)?
+            .selected_model,
+        AsrModelId::WhisperTurbo
+    );
+    Ok(())
+}
+
+/// A failed ASR preference write cannot change the language, live model or existing configuration.
+#[test]
+fn failed_model_save_keeps_both_preferences() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut settings = TranscriptionSettings::new(dir.path());
+    settings
+        .save(TranscriptionLanguage::Italian)
+        .map_err(anyhow::Error::msg)?;
+    let original = std::fs::read(dir.path().join("settings.json"))?;
+    let blocked = dir.path().join("blocked");
+    std::fs::create_dir(&blocked)?;
+    settings.configuration = blocked;
+    assert!(settings.save_model(AsrModelId::WhisperTurbo).is_err());
+    let snapshot = settings.snapshot().map_err(anyhow::Error::msg)?;
+    assert_eq!(snapshot.selected_model, AsrModelId::Parakeet);
+    assert_eq!(snapshot.language, TranscriptionLanguage::Italian);
+    assert_eq!(std::fs::read(dir.path().join("settings.json"))?, original);
     Ok(())
 }

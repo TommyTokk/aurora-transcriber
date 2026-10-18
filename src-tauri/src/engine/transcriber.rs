@@ -1,6 +1,7 @@
 //! Resident GGUF weights with scoped, serial per-file native inference.
 use super::{
-    providers, resources, AsrSelection, DeviceSnapshot, EngineError, FallbackReason, Provider,
+    providers, resources, AsrModelId, AsrSelection, DeviceSnapshot, EngineError, FallbackReason,
+    Provider,
 };
 use crate::settings::TranscriptionLanguage;
 use std::path::Path;
@@ -8,7 +9,7 @@ use transcribe_cpp::{CancelToken, Feature, Model, RunOptions, Session, Timestamp
 
 const MAX_SAMPLES: usize = 25 * 16_000;
 
-/// Owns verified Parakeet weights; no session or transcript survives a file operation.
+/// Owns verified selected ASR weights; no session or transcript survives a file operation.
 pub struct TranscriberEngine {
     model: Model,
     device: DeviceSnapshot,
@@ -40,13 +41,27 @@ impl TranscriberEngine {
         model_dir: &Path,
         selection: &AsrSelection,
     ) -> Result<Self, EngineError> {
+        Self::new_with_model(model_dir, AsrModelId::Parakeet, selection)
+    }
+
+    /// Loads one checksum-pinned ASR on the requested device with ordered CPU recovery.
+    pub fn new_with_model(
+        model_dir: &Path,
+        model_id: AsrModelId,
+        selection: &AsrSelection,
+    ) -> Result<Self, EngineError> {
         let candidates = providers::options(selection)?;
-        resources::validate(model_dir)?;
+        let resource = model_id.resource();
+        if !model_dir.is_absolute() || !model_dir.is_dir() {
+            return Err(EngineError::Configuration);
+        }
+        resources::verify_file(&model_dir.join(resource.filename), resource.sha256)?;
         let (mut engine, fallback_reason) =
             providers::try_candidates(&candidates, selection, |options| {
-                let model = Model::load_with(model_dir.join(resources::MODEL_FILE), options)
+                let model = Model::load_with(model_dir.join(resource.filename), options)
                     .map_err(map_native_error)?;
-                validate_contract(
+                validate_model_contract(
+                    model_id,
                     &model.arch(),
                     &model.variant(),
                     model.capabilities().native_sample_rate,
@@ -207,8 +222,19 @@ fn validate_session_limit(max_audio_ms: i64) -> Result<(), EngineError> {
 }
 
 /// Rejects incompatible model metadata without inventing timing or language information.
+#[cfg(test)]
 fn validate_contract(arch: &str, variant: &str, sample_rate: i32) -> Result<(), EngineError> {
-    if arch != "parakeet" || variant != "tdt-0.6b-v3" || sample_rate != 16_000 {
+    validate_model_contract(AsrModelId::Parakeet, arch, variant, sample_rate)
+}
+
+/// Requires the exact catalog identity and 16 kHz input contract before creating a session.
+fn validate_model_contract(
+    model: AsrModelId,
+    arch: &str,
+    variant: &str,
+    sample_rate: i32,
+) -> Result<(), EngineError> {
+    if (arch, variant) != model.contract() || sample_rate != 16_000 {
         return Err(EngineError::ModelContract);
     }
     Ok(())

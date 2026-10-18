@@ -11,7 +11,7 @@ original audio, and save or export your edited text.
 ## Features
 
 - Import one WAV, MP3, FLAC, M4A or OGG/Vorbis file using a native picker or drag and drop.
-- Transcribe locally with Parakeet TDT 0.6B v3 Q8_0 and Silero v5.1 voice activity detection.
+- Transcribe locally with Parakeet TDT 0.6B v3 or Whisper large-v3-turbo (Q8_0), with shared Silero v5.1 voice activity detection.
 - Choose Auto-detect, Italiano or English as a source-language hint.
 - Edit transcript blocks with playback, seeking and speed controls.
 - Keep an explicitly saved local transcript archive and export TXT, SRT or VTT.
@@ -64,13 +64,24 @@ management and transcription require the desktop app.
 2. Use the default model directory or select **Choose folder** to use an existing,
    writable directory. **Open folder** shows the current destination;
    **Use default** restores the default location.
-3. Select **Download models**. This explicitly connects to Hugging Face to fetch
-   and verify the required Parakeet and Silero files. No API key is required.
-4. Wait for **Verified models ready**, then open **Transcription Studio**.
+3. Choose **Select model** on Parakeet (the initial default) or Whisper Turbo.
+   Your choice is remembered after restart; selecting a model never downloads it.
+4. Select **Download** on its card, or **Download selected + VAD**. This explicitly
+   connects to Hugging Face to fetch and verify that ASR and shared Silero files.
+   No API key is required. Other ASRs can be downloaded separately without changing selection.
+5. Wait for **Verified models ready**, then open **Transcription Studio**.
 
-The Parakeet file alone is approximately 740 MB. Leave additional free space
+Parakeet is approximately 740 MB, Whisper Turbo Q8_0 is 886 MB, and Silero is 2.3 MB. Leave additional free space
 for download and staging copies. Changing the model directory leaves existing
 files in place; it does not move or delete them.
+
+Use **Verify / repair** to reuse verified weights or repair corrupt files. Each
+card distinguishes file presence from verified readiness of the selected pair.
+**Delete** asks for confirmation and removes only that model and its managed
+transfer cache in the current folder. Deleting the selected ASR keeps its selection
+but requires another choice or a new download. Deleting Silero blocks transcription
+with both ASRs until Silero is downloaded again. No model is automatically replaced
+or downloaded after deletion.
 
 Once models are installed, transcription and model reloads work offline.
 Models leave memory after more than five idle minutes and reload from disk
@@ -124,7 +135,7 @@ the requested ASR device resets to Auto on restart.
 
 | Problem                            | Action                                                                                                                   |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| Models unavailable                 | Check the selected model folder and use **Download models** for missing or corrupt files.                                |
+| Models unavailable                 | Check the selected model folder and use **Download selected + VAD** for missing or corrupt files.                        |
 | Custom model folder inaccessible   | Reconnect the drive, choose a writable folder, or select **Use default**.                                                |
 | GPU initialization fails           | Auto and explicit GPU selections attempt CPU recovery. Check the active device label; use **Reload selection** to retry. |
 | Import fails                       | Check that the file is a supported, readable audio file. Corrupt streams or changing audio parameters can be rejected.   |

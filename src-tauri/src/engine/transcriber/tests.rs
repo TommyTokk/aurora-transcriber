@@ -159,3 +159,33 @@ fn language_options_preserve_offline_transcription_contract() {
         assert!(options.family.is_none());
     }
 }
+
+/// Both ASRs require their exact family, variant and native sampling rate.
+#[test]
+fn selected_model_contract_is_strict() -> anyhow::Result<()> {
+    for model in [AsrModelId::Parakeet, AsrModelId::WhisperTurbo] {
+        let (arch, variant) = model.contract();
+        validate_model_contract(model, arch, variant, 16_000)?;
+        assert!(validate_model_contract(model, arch, variant, 8_000).is_err());
+        assert!(validate_model_contract(model, arch, "unknown", 16_000).is_err());
+        assert!(validate_model_contract(model, "unknown", variant, 16_000).is_err());
+    }
+    Ok(())
+}
+
+/// Rejects corrupt GGUFs for either catalog identity before native weight allocation.
+#[test]
+fn catalog_checksums_gate_native_loading() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    for model in [AsrModelId::Parakeet, AsrModelId::WhisperTurbo] {
+        std::fs::write(
+            dir.path().join(model.resource().filename),
+            b"corrupt weights",
+        )?;
+        assert!(matches!(
+            TranscriberEngine::new_with_model(dir.path(), model, &AsrSelection::Cpu {}),
+            Err(EngineError::Resources)
+        ));
+    }
+    Ok(())
+}

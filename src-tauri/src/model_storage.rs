@@ -164,9 +164,22 @@ fn check_writable(path: &Path) -> Result<(), String> {
     std::fs::read_dir(path).map_err(|_| DIRECTORY_ERROR)?;
     Ok(())
 }
+/// Reports only the selected ASR requirements while retaining native directory diagnostics.
+fn native_snapshot<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<ModelStorageSnapshot, String> {
+    let storage = app.state::<ModelStorage>();
+    let mut snapshot = storage.snapshot()?;
+    if let Ok(path) = storage.path() {
+        let selected = app.state::<EngineState>().snapshot()?.selected_model;
+        snapshot.missing = fetcher::missing_for(&path, selected);
+    }
+    Ok(snapshot)
+}
+
 /// Emits fresh directory status after selection, cancellation, or provisioning.
 pub(crate) fn publish<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
-    if let Ok(snapshot) = app.state::<ModelStorage>().snapshot() {
+    if let Ok(snapshot) = native_snapshot(app) {
         let _ = app.emit_to("main", "model-storage-state", snapshot);
     }
 }
@@ -203,7 +216,7 @@ async fn finish_choice<R: tauri::Runtime>(
 /// Returns display state without accepting a path argument.
 #[tauri::command]
 pub async fn model_storage_state(app: tauri::AppHandle) -> Result<ModelStorageSnapshot, String> {
-    tauri::async_runtime::spawn_blocking(move || app.state::<ModelStorage>().snapshot())
+    tauri::async_runtime::spawn_blocking(move || native_snapshot(&app))
         .await
         .map_err(|_| DIRECTORY_ERROR.to_string())?
 }

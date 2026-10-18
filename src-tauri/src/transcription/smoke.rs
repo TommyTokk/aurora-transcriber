@@ -229,3 +229,150 @@ fn verify_cancellation(
     drop(cancelled);
     Ok(())
 }
+
+/// Exercises both catalog ASRs on ten seconds of speech, offline reuse, switching and safe deletion.
+#[test]
+#[ignore = "requires AURORA_MODEL_SMOKE_BASE with pinned catalog weights and trusted ORT_DYLIB_PATH"]
+fn catalog_models_pipeline_and_lifecycle() -> anyhow::Result<()> {
+    use crate::engine::{manifest, AsrModelId};
+    use crate::settings::TranscriptionSettings;
+    let source = crate::resources::absolute_env("AURORA_MODEL_SMOKE_BASE")?;
+    let profile = tempfile::tempdir()?;
+    let base = profile.path().join("models");
+    // Hard links isolate deletion and settings tests without duplicating or modifying source weights.
+    for model in manifest::MODELS {
+        let target = model.destination(&base);
+        std::fs::create_dir_all(
+            target
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("Missing model parent"))?,
+        )?;
+        std::fs::hard_link(model.destination(&source), target)?;
+    }
+    let app = tauri::test::mock_app();
+    app.manage(crate::model_storage::ModelStorage::new(profile.path()));
+    app.manage(EngineState::default());
+    app.manage(TranscriptionSettings::new(profile.path()));
+    app.manage(TranscriptionState::default());
+    let audio = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../audio_samples/audio.m4a");
+    let mut samples = crate::audio::AudioDecoder::decode_to_16khz_mono(&audio)?;
+    samples.truncate(10 * 16_000);
+    samples.shrink_to_fit();
+    let state = app.state::<EngineState>();
+    let result = (|| -> anyhow::Result<()> {
+        for model in [AsrModelId::Parakeet, AsrModelId::WhisperTurbo] {
+            let selected = tauri::async_runtime::block_on(crate::engine::management::perform(
+                app.handle().clone(),
+                crate::engine::management::ModelAction::Select(model),
+            ))
+            .map_err(anyhow::Error::msg)?;
+            anyhow::ensure!(
+                selected.phase == "ready",
+                "Catalog model failed to initialize: {:?}",
+                selected.error
+            );
+            anyhow::ensure!(
+                selected.provider == Some(Provider::Metal),
+                "Expected real Metal execution"
+            );
+            let job = app.state::<TranscriptionState>();
+            job.begin("catalog smoke".into(), TranscriptionLanguage::Italian)
+                .map_err(anyhow::Error::msg)?;
+            let inference = state.with_sessions(app.handle(), |sessions| {
+                process_samples(app.handle(), sessions, &samples)
+            });
+            job.finish(app.handle(), inference);
+            let snapshot = job.snapshot().map_err(anyhow::Error::msg)?;
+            anyhow::ensure!(
+                snapshot.phase == TranscriptionPhase::Completed,
+                "Catalog transcription failed: {:?}",
+                snapshot.error
+            );
+            anyhow::ensure!(
+                snapshot
+                    .segments
+                    .iter()
+                    .any(|segment| !segment.text.trim().is_empty()),
+                "Expected speech output"
+            );
+            anyhow::ensure!(
+                snapshot
+                    .segments
+                    .iter()
+                    .all(|segment| segment.end_sec <= 10.0),
+                "Clip timing exceeded"
+            );
+            crate::export::validate_segments(&snapshot.segments).map_err(anyhow::Error::msg)?;
+            drop(snapshot);
+            *job.0
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Job lock failed"))? = Job::default();
+            state.unload_idle_at(
+                app.handle(),
+                std::time::Instant::now() + std::time::Duration::from_secs(301),
+            );
+            assert_eq!(
+                state.snapshot().map_err(anyhow::Error::msg)?.phase,
+                "unloaded"
+            );
+            // All artifacts are already verified; the explicit repair action must reuse them offline.
+            let reused = tauri::async_runtime::block_on(crate::engine::management::perform(
+                app.handle().clone(),
+                crate::engine::management::ModelAction::Download(
+                    model.resource().descriptor.id.into(),
+                ),
+            ))
+            .map_err(anyhow::Error::msg)?;
+            assert_eq!(reused.phase, "ready");
+            assert_eq!(reused.selected_model, model);
+            assert_eq!(
+                TranscriptionSettings::new(profile.path())
+                    .snapshot()
+                    .map_err(anyhow::Error::msg)?
+                    .selected_model,
+                model
+            );
+            println!("Catalog {:?}: Metal transcription, idle unload, offline repair/reload and persisted selection passed.", model);
+        }
+        let inactive = tauri::async_runtime::block_on(crate::engine::management::perform(
+            app.handle().clone(),
+            crate::engine::management::ModelAction::Download(
+                manifest::PARAKEET.descriptor.id.into(),
+            ),
+        ))
+        .map_err(anyhow::Error::msg)?;
+        assert_eq!(inactive.selected_model, AsrModelId::WhisperTurbo);
+        assert_eq!(inactive.phase, "ready");
+        let removed = tauri::async_runtime::block_on(crate::engine::management::perform(
+            app.handle().clone(),
+            crate::engine::management::ModelAction::Delete(manifest::PARAKEET.descriptor.id.into()),
+        ))
+        .map_err(anyhow::Error::msg)?;
+        assert_eq!(removed.phase, "ready");
+        assert_eq!(
+            state.with_engine(|asr| Ok(asr.provider()))?,
+            Provider::Metal
+        );
+        for resource in [&manifest::SILERO, &manifest::WHISPER_TURBO] {
+            let removed = tauri::async_runtime::block_on(crate::engine::management::perform(
+                app.handle().clone(),
+                crate::engine::management::ModelAction::Delete(resource.descriptor.id.into()),
+            ))
+            .map_err(anyhow::Error::msg)?;
+            assert_eq!(removed.selected_model, AsrModelId::WhisperTurbo);
+            assert_eq!(removed.phase, "missing");
+            assert!(state.with_engine(|_| Ok(())).is_err());
+            if resource.descriptor.purpose == manifest::ModelPurpose::Vad {
+                std::fs::hard_link(resource.destination(&source), resource.destination(&base))?;
+                state
+                    .reload_destination(app.handle())
+                    .map_err(anyhow::Error::msg)?;
+                assert_eq!(state.snapshot().map_err(anyhow::Error::msg)?.phase, "ready");
+            }
+        }
+        Ok(())
+    })();
+    drop(samples);
+    state.shutdown();
+    result
+}
