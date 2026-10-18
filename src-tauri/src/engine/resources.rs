@@ -4,10 +4,12 @@ use std::path::Path;
 
 /// Official Handy conversion revision, confirmed through Hugging Face model metadata.
 pub const REVISION: &str = super::manifest::PARAKEET.revision;
-/// The single supported ASR filename, shared with the native loader and local tools.
+/// Legacy Parakeet filename retained by compatibility and local resource tests.
+#[cfg(test)]
 pub(crate) const MODEL_FILE: &str = super::manifest::PARAKEET.filename;
 
 /// Verifies the fixed local GGUF before native parsing or weight allocation.
+#[cfg(test)]
 pub(crate) fn validate(dir: &Path) -> Result<(), EngineError> {
     if !dir.is_absolute() || !dir.is_dir() {
         return Err(EngineError::Configuration);

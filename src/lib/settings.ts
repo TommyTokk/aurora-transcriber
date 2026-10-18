@@ -1,8 +1,11 @@
+import type { AsrModelId } from "./transcription";
+
 /** Supported source-language preferences shared by settings UI and native IPC. */
 export type TranscriptionLanguage = "auto" | "it" | "en";
 /** Effective native preference and recoverable configuration warning. */
 export interface TranscriptionSettings {
   language: TranscriptionLanguage;
+  selectedModel: AsrModelId;
   warning: string | null;
 }
 export const LANGUAGE_OPTIONS = [

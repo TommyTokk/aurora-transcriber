@@ -87,7 +87,7 @@ export default function App() {
   const error =
     audio.connectionError ?? audio.update.error ?? transcription.error;
   const model = transcription.model;
-  const asr = model.models.find((item) => item.purpose === "ASR");
+  const asr = model.models.find((item) => item.id === model.selectedModel);
   const status = !audio.native
     ? "Desktop preview"
     : transcription.active
@@ -288,6 +288,9 @@ export default function App() {
               active={transcription.active}
               disabled={disabled}
               onDownload={transcription.download}
+              onSelect={transcription.selectModel}
+              onDownloadModel={transcription.downloadModel}
+              onDelete={transcription.deleteModel}
               folder={folder}
             />
           </div>

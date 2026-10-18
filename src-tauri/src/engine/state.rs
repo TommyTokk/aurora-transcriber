@@ -1,6 +1,7 @@
 //! Serialized model residency with cheap status snapshots and offline reload.
 use super::{
-    fetcher, AsrSelection, DeviceSnapshot, EngineError, FallbackReason, Provider, TranscriberEngine,
+    fetcher, manifest, model_files, AsrModelId, AsrSelection, DeviceSnapshot, EngineError,
+    FallbackReason, Provider, TranscriberEngine,
 };
 use crate::{model_storage::ModelStorage, vad::SileroVad};
 use serde::Serialize;
@@ -20,6 +21,8 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 pub struct EngineSnapshot {
     pub revision: u64,
     pub models: Vec<super::ModelDescriptor>,
+    pub selected_model: AsrModelId,
+    pub installed: Vec<String>,
     pub selection: AsrSelection,
     pub devices: Vec<DeviceSnapshot>,
     pub device: Option<DeviceSnapshot>,
@@ -92,6 +95,8 @@ impl Default for EngineState {
             snapshot: Mutex::new(EngineSnapshot {
                 revision: 0,
                 models: super::manifest::descriptors(),
+                selected_model: AsrModelId::default(),
+                installed: vec![],
                 selection: AsrSelection::Auto {},
                 devices: vec![],
                 device: None,
@@ -237,6 +242,7 @@ impl EngineState {
     }
     /// Constructs verified local ASR weights and VAD on a worker without network access.
     fn load<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>) -> Result<Sessions, String> {
+        self.refresh_catalog(app)?;
         if let Err(error) = self.discover(app) {
             self.publish(
                 app,
@@ -274,7 +280,8 @@ impl EngineState {
                 error.to_string()
             })?;
         }
-        let missing = fetcher::missing(&base);
+        let selected = self.snapshot()?.selected_model;
+        let missing = fetcher::missing_for(&base, selected);
         if !missing.is_empty() {
             self.publish(
                 app,
@@ -289,13 +296,16 @@ impl EngineState {
         }
         self.publish(app, "loading", None, None, vec![], None, None);
         let result: Result<Sessions, String> = (|| {
-            let (asr, vad) = fetcher::paths(&base);
+            let resource = selected.resource();
+            let asr_file = model_files::artifact(&base, resource)?;
+            let asr = asr_file.parent().ok_or("Invalid ASR destination.")?;
+            let vad = model_files::artifact(&base, &manifest::SILERO)?;
             // ASR verifies its own files during construction; avoid hashing its GB weights twice.
             crate::resources::verify_file(&vad, fetcher::SILERO_HASH).map_err(|_| {
                 "Local Silero model failed verification. Download models to repair it.".to_string()
             })?;
             let selection = self.snapshot()?.selection;
-            let asr = TranscriberEngine::new_with_selection(&asr, &selection)
+            let asr = TranscriberEngine::new_with_model(asr, selected, &selection)
                 .map_err(|e| e.to_string())?;
             let vad = SileroVad::new(&vad)
                 .map_err(|_| "Unable to initialize the local Silero VAD model.".to_string())?;
@@ -319,6 +329,44 @@ impl EngineState {
         }
         result
     }
+    /// Refreshes cheap artifact presence and the saved ASR independently of inference readiness.
+    pub(crate) fn refresh_catalog<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+    ) -> Result<(), String> {
+        let selected = match app.try_state::<crate::settings::TranscriptionSettings>() {
+            Some(settings) => settings.snapshot()?.selected_model,
+            None => self.snapshot()?.selected_model,
+        };
+        let installed = app
+            .state::<ModelStorage>()
+            .path()
+            .map(|base| {
+                manifest::MODELS
+                    .iter()
+                    .filter(|model| {
+                        model_files::artifact(&base, model).is_ok_and(|path| path.is_file())
+                    })
+                    .map(|model| model.descriptor.id.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.update(app, |snapshot| {
+            snapshot.selected_model = selected;
+            snapshot.installed = installed;
+        });
+        Ok(())
+    }
+
+    /// Releases all native sessions on the reserved blocking worker before removing required files.
+    pub(crate) fn clear_sessions(&self) -> Result<(), String> {
+        self.resident
+            .lock()
+            .map_err(|_| "Models are unavailable.")?
+            .value = None;
+        Ok(())
+    }
+
     /// Releases the old session pair on a worker and verifies the newly selected destination offline.
     pub(crate) fn reload_destination<R: tauri::Runtime>(
         &self,
@@ -484,7 +532,9 @@ pub async fn download_models(app: tauri::AppHandle) -> Result<(), String> {
     let result = tauri::async_runtime::spawn_blocking(move || {
         let state = worker.state::<EngineState>();
         state.publish(&worker, "downloading", None, None, vec![], None, Some(0.0));
-        fetcher::download(&worker)?;
+        let download = fetcher::download(&worker);
+        state.refresh_catalog(&worker)?;
+        download?;
         state.with_sessions(&worker, |_| Ok(()))
     })
     .await

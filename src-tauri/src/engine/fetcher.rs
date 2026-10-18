@@ -1,5 +1,7 @@
 //! Explicit Hugging Face provisioning with verified, atomic local promotion.
-use super::{manifest, resources, EngineError};
+#[cfg(test)]
+use super::EngineError;
+use super::{manifest, model_files, resources, AsrModelId};
 use crate::model_storage::ModelStorage;
 use hf_hub::{
     api::{sync::ApiBuilder, Progress},
@@ -14,6 +16,7 @@ use tauri::{Emitter, Manager};
 /// Trusted Silero content identity retained for existing offline callers.
 pub(crate) const SILERO_HASH: &str = manifest::SILERO.sha256;
 /// Resolves typed ASR and VAD destinations solely inside the managed directory.
+#[cfg(test)]
 pub(crate) fn paths(base: &Path) -> (PathBuf, PathBuf) {
     (
         base.join(manifest::PARAKEET.directory),
@@ -22,15 +25,20 @@ pub(crate) fn paths(base: &Path) -> (PathBuf, PathBuf) {
 }
 /// Lists absent artifacts with safe filenames only; loading verifies their content.
 pub(crate) fn missing(base: &Path) -> Vec<String> {
-    manifest::MODELS
+    missing_for(base, AsrModelId::default())
+}
+/// Lists requirements for the selected ASR without requiring other catalog entries.
+pub(crate) fn missing_for(base: &Path, selected: AsrModelId) -> Vec<String> {
+    manifest::required(selected)
         .iter()
-        .filter(|model| !model.destination(base).is_file())
+        .filter(|model| !model_files::artifact(base, model).is_ok_and(|path| path.is_file()))
         .map(|model| model.filename.to_string())
         .collect()
 }
 /// Verifies both formats locally without invoking any network API.
+#[cfg(test)]
 pub(crate) fn validate(base: &Path) -> Result<(), EngineError> {
-    for model in manifest::MODELS {
+    for model in manifest::required(AsrModelId::default()) {
         resources::verify_file(&model.destination(base), model.sha256)?;
     }
     Ok(())
@@ -119,7 +127,33 @@ impl<R: tauri::Runtime> Progress for DownloadProgress<R> {
 }
 /// Downloads only missing or corrupt files after the explicit Download models action.
 pub(crate) fn download<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    let selected = app.state::<super::EngineState>().snapshot()?.selected_model;
+    download_resources(app, &manifest::required(selected))
+}
+
+/// Repairs one explicitly requested ASR plus shared VAD, or VAD alone, without changing selection.
+pub(crate) fn download_one<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    model: &manifest::ModelResource,
+) -> Result<(), String> {
+    let resources: Vec<_> = if model.descriptor.purpose == manifest::ModelPurpose::Asr {
+        vec![model, &manifest::SILERO]
+    } else {
+        vec![model]
+    };
+    download_resources(app, &resources)
+}
+
+/// Transfers only requested immutable artifacts; verified files are reused without network access.
+fn download_resources<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    models: &[&manifest::ModelResource],
+) -> Result<(), String> {
     let base = app.state::<ModelStorage>().prepare()?;
+    for model in models {
+        model_files::artifact(&base, model)?;
+        model_files::cache(&base, model)?;
+    }
     // This builder fixes the endpoint and disables environment token lookup and console output.
     let api = ApiBuilder::new()
         .with_cache_dir(base.join(".download-cache"))
@@ -128,10 +162,10 @@ pub(crate) fn download<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(
         .with_retries(2)
         .build()
         .map_err(|_| "Unable to initialize model download.")?;
-    let total = manifest::MODELS.len();
-    for (index, model) in manifest::MODELS.iter().enumerate() {
+    let total = models.len();
+    for (index, model) in models.iter().enumerate() {
         // The artifact owns its source and relative destination; roles never route by filename.
-        let target = model.destination(&base);
+        let target = model_files::artifact(&base, model)?;
         ensure_file(&target, model.sha256, || {
             let progress = DownloadProgress {
                 app: app.clone(),
@@ -155,9 +189,12 @@ pub(crate) fn download<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(
             Ok(source)
         })?;
     }
-    validate(&base).map_err(|_| "Model verification failed.")?;
-    // Only successful provisioning removes our own redundant transfer cache.
-    let _ = std::fs::remove_dir_all(base.join(".download-cache"));
+    for model in models {
+        resources::verify_file(&model_files::artifact(&base, model)?, model.sha256)
+            .map_err(|_| "Model verification failed.")?;
+        // A successful transfer removes only the requested repository's redundant cache.
+        let _ = std::fs::remove_dir_all(model_files::cache(&base, model)?);
+    }
     let _ = app.emit_to("main", "models-downloaded", ());
     Ok(())
 }
@@ -250,7 +287,7 @@ mod manifest_tests {
     fn mixed_resource_presence_and_corruption() -> anyhow::Result<()> {
         for present in 0_u8..4 {
             let directory = tempfile::tempdir()?;
-            for (index, model) in manifest::MODELS.iter().enumerate() {
+            for (index, model) in manifest::required(AsrModelId::default()).iter().enumerate() {
                 if present & (1 << index) != 0 {
                     let target = model.destination(directory.path());
                     std::fs::create_dir_all(
@@ -261,7 +298,7 @@ mod manifest_tests {
                     std::fs::write(target, b"corrupt")?;
                 }
             }
-            let expected: Vec<_> = manifest::MODELS
+            let expected: Vec<_> = manifest::required(AsrModelId::default())
                 .iter()
                 .enumerate()
                 .filter(|(index, _)| present & (1 << index) == 0)

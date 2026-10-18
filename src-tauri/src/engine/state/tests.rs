@@ -220,7 +220,7 @@ fn snapshot_serializes_public_model_identities() -> anyhow::Result<()> {
         let fields = descriptor
             .as_object()
             .ok_or_else(|| anyhow::anyhow!("Expected descriptor"))?;
-        assert_eq!(fields.len(), 6);
+        assert_eq!(fields.len(), 7);
         for private in [
             "repository",
             "revision",

@@ -55,8 +55,20 @@ cargo test --workspace --locked --offline --test parakeet -- --ignored
 ```
 
 It requires an Apple Silicon Metal device and the pinned Parakeet GGUF.
-Other ignored pipeline smoke tests are environment-specific and can access
-local recordings; they are not part of the public verification commands.
+The catalog lifecycle smoke test requires a model folder containing both ASRs
+(`parakeet/` and `whisper/`) and `silero_vad.onnx`:
+
+```sh
+export AURORA_MODEL_SMOKE_BASE=/absolute/path/to/models
+cargo test --workspace --locked --offline --lib catalog_models_pipeline_and_lifecycle -- --ignored --nocapture
+```
+
+It requires real Metal execution and transcribes only the first ten seconds of
+`audio_samples/audio.m4a`. It uses an isolated temporary profile and hard-linked
+weights to verify switching, persisted selection, offline repair/reload and deletion.
+It never prints transcript content or deletes source model files. The recording
+must be authorized for local testing. Other ignored pipeline smoke tests are
+environment-specific and are not part of the ordinary verification commands.
 
 ## Native backends
 
@@ -105,7 +117,7 @@ Static Metal checks establish backend inclusion; hardware execution requires
 separate functional testing. Packages are unsigned; signing, notarization and
 older macOS compatibility remain unverified.
 
-Model weights are provisioned separately through **Download models**.
+Model weights are provisioned separately through the model card **Download** actions or **Download selected + VAD**.
 Packaging includes the CPU ONNX Runtime and transcribe.cpp/GGML license notices.
 
 ## App icon

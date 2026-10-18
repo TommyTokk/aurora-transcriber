@@ -9,6 +9,7 @@ import {
   isNewSnapshot,
   isNewModelSnapshot,
   type AsrSelection,
+  type AsrModelId,
   type ModelSnapshot,
   type SubtitleSegment,
   type TranscriptionSnapshot,
@@ -176,6 +177,31 @@ export function useTranscription() {
       await invoke("download_models");
     });
   }
+  /** Runs a catalog-scoped model command and accepts its response only if it is newer. */
+  function manageModel(
+    command: "select_asr_model" | "download_model" | "delete_model",
+    modelId: string,
+  ) {
+    void perform(async () => {
+      const incoming = await invoke<ModelSnapshot>(command, { modelId });
+      if (isNewModelSnapshot(latestModel.current, incoming)) {
+        latestModel.current = incoming;
+        setModel(incoming);
+      }
+    });
+  }
+  /** Persists one ASR choice; selection alone never triggers a download. */
+  function selectModel(modelId: AsrModelId) {
+    manageModel("select_asr_model", modelId);
+  }
+  /** Repairs one catalog model and any missing shared VAD dependency. */
+  function downloadModel(modelId: string) {
+    manageModel("download_model", modelId);
+  }
+  /** Deletes the confirmed catalog artifact without switching the selected ASR. */
+  function deleteModel(modelId: string) {
+    manageModel("delete_model", modelId);
+  }
   /** Explicitly applies one ASR preference and reloads models while foreground controls are reserved. */
   function selectDevice(selection: AsrSelection) {
     void perform(async () => {
@@ -305,6 +331,9 @@ export function useTranscription() {
     cancel,
     download,
     selectDevice,
+    selectModel,
+    downloadModel,
+    deleteModel,
     edit,
     save,
     open,
