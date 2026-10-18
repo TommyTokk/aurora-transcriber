@@ -44,6 +44,7 @@ pub fn run() -> anyhow::Result<()> {
             engine::state::select_asr_device,
             engine::state::download_models,
             engine::management::select_asr_model,
+            engine::management::unload_asr_model,
             engine::management::download_model,
             engine::management::delete_model,
             model_storage::model_storage_state,

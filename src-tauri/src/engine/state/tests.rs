@@ -86,6 +86,32 @@ impl Drop for ResidentAsset {
     }
 }
 
+/// Explicit clearing drops assets before the idle deadline and the next use reloads only once.
+#[test]
+fn manual_clear_drops_immediately_and_reloads_once() -> Result<(), String> {
+    let live = std::rc::Rc::new(std::cell::Cell::new(true));
+    let mut resident = Residency {
+        value: Some(ResidentAsset(live.clone())),
+        last_used: Instant::now(),
+    };
+    assert!(!resident.unload(Instant::now(), false));
+    resident.clear();
+    assert!(!live.get());
+    resident.clear();
+    let mut loads = 0;
+    resident.get_or_load(|| {
+        loads += 1;
+        live.set(true);
+        Ok(ResidentAsset(live.clone()))
+    })?;
+    resident.get_or_load(|| Err("Must reuse resident weights".into()))?;
+    assert_eq!(loads, 1);
+    assert!(live.get());
+    drop(resident);
+    assert!(!live.get());
+    Ok(())
+}
+
 /// A failed switch releases the old model and a later offline retry loads exactly once.
 #[test]
 fn replacement_drops_before_load_and_retains_failure() -> Result<(), String> {

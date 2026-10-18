@@ -179,7 +179,11 @@ export function useTranscription() {
   }
   /** Runs a catalog-scoped model command and accepts its response only if it is newer. */
   function manageModel(
-    command: "select_asr_model" | "download_model" | "delete_model",
+    command:
+      | "select_asr_model"
+      | "unload_asr_model"
+      | "download_model"
+      | "delete_model",
     modelId: string,
   ) {
     void perform(async () => {
@@ -193,6 +197,10 @@ export function useTranscription() {
   /** Persists one ASR choice; selection alone never triggers a download. */
   function selectModel(modelId: AsrModelId) {
     manageModel("select_asr_model", modelId);
+  }
+  /** Releases selected ASR and VAD sessions immediately while preserving the saved choice. */
+  function unloadModel(modelId: AsrModelId) {
+    manageModel("unload_asr_model", modelId);
   }
   /** Repairs one catalog model and any missing shared VAD dependency. */
   function downloadModel(modelId: string) {
@@ -332,6 +340,7 @@ export function useTranscription() {
     download,
     selectDevice,
     selectModel,
+    unloadModel,
     downloadModel,
     deleteModel,
     edit,

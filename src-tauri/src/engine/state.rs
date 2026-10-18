@@ -45,6 +45,10 @@ struct Residency<T> {
     last_used: Instant,
 }
 impl<T> Residency<T> {
+    /// Immediately drops resident assets without waiting for the idle deadline.
+    fn clear(&mut self) {
+        self.value = None;
+    }
     /// Drops the previous assets before loading a replacement, retaining failures as unloaded.
     fn replace(&mut self, loader: impl FnOnce() -> Result<T, String>) -> Result<(), String> {
         self.value = None;
@@ -71,7 +75,7 @@ impl<T> Residency<T> {
             && self.value.is_some()
             && now.saturating_duration_since(self.last_used) > IDLE_TIMEOUT
         {
-            self.value = None;
+            self.clear();
             return true;
         }
         false
@@ -358,12 +362,12 @@ impl EngineState {
         Ok(())
     }
 
-    /// Releases all native sessions on the reserved blocking worker before removing required files.
+    /// Immediately drops both native sessions on the reserved worker for unload or deletion.
     pub(crate) fn clear_sessions(&self) -> Result<(), String> {
         self.resident
             .lock()
             .map_err(|_| "Models are unavailable.")?
-            .value = None;
+            .clear();
         Ok(())
     }
 

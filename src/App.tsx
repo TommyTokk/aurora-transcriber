@@ -289,6 +289,7 @@ export default function App() {
               disabled={disabled}
               onDownload={transcription.download}
               onSelect={transcription.selectModel}
+              onUnload={transcription.unloadModel}
               onDownloadModel={transcription.downloadModel}
               onDelete={transcription.deleteModel}
               folder={folder}

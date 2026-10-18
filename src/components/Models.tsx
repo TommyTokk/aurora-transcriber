@@ -14,11 +14,12 @@ interface Props {
   disabled: boolean;
   onDownload: () => void;
   onSelect: (id: AsrModelId) => void;
+  onUnload: (id: AsrModelId) => void;
   onDownloadModel: (id: string) => void;
   onDelete: (id: string) => void;
   folder: ReturnType<typeof useModelStorage>;
 }
-/** Displays the local model catalog, selected ASR, individual actions and native storage controls. */
+/** Offers Select for installed ASR weights and Unload for the currently resident model. */
 export function Models({
   native,
   model,
@@ -26,6 +27,7 @@ export function Models({
   disabled,
   onDownload,
   onSelect,
+  onUnload,
   onDownloadModel,
   onDelete,
   folder,
@@ -107,12 +109,20 @@ export function Models({
               {item.purpose === "ASR" && (
                 <button
                   className="secondary-button"
-                  disabled={busy || item.id === model.selectedModel}
-                  onClick={() => onSelect(item.id as AsrModelId)}
+                  disabled={busy || !model.installed.includes(item.id)}
+                  onClick={() => {
+                    // Readiness belongs only to the selected ASR; other installed models can be selected.
+                    if (
+                      item.id === model.selectedModel &&
+                      model.phase === "ready"
+                    )
+                      onUnload(item.id as AsrModelId);
+                    else onSelect(item.id as AsrModelId);
+                  }}
                 >
-                  {item.id === model.selectedModel
-                    ? "Selected"
-                    : "Select model"}
+                  {item.id === model.selectedModel && model.phase === "ready"
+                    ? "Unload"
+                    : "Select"}
                 </button>
               )}
               <button
