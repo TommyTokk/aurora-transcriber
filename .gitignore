@@ -56,3 +56,5 @@ id_ed25519
 .pypirc
 credentials.json
 service-account*.json
+
+message.md
